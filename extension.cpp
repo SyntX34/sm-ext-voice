@@ -64,12 +64,35 @@ ISDKTools *g_pSDKTools = NULL;
 IServer *iserver = NULL;
 
 double g_fLastVoiceData[SM_MAXPLAYERS + 1];
+int g_aFrameVoiceBytes[SM_MAXPLAYERS + 1];
+
+#define NET_MAX_VOICE_BYTES_FRAME 512
+#define NET_MAX_VOICE_BYTES_FRAME_LOG 1024
+
+/*
+// This is just the client_t->netchan.datagram buffer size (shouldn't ever need to be huge)
+#define NET_MAX_VOICE_BYTES_FRAME    4000    // = maximum unreliable payload size
+maybe try 1024 for starters
+instead of 4096
+voice data should never be that big
+actually I can give you a fool-proof number
+since I did tests for torchlight
+the packetsize is hardcoded 64 bytes
+torchlight sends max 5 frames at once to clients
+there are 512 frames per packet
+sample rate 22050
+so one packet is 23.2ms
+anyways, since torchlight only sends 5 packets at once, which is 5*64 = 320 bytes
+make the limit > 384 (6 * 64)
+I'm thinking the guy probably just sends a huge packet with max size 4000 or whatever to the server
+and it puts it in the netchan, which seems to be 4000 max big
+and then any other data in there overflows it
+*/
 
 DETOUR_DECL_STATIC4(SV_BroadcastVoiceData, void, IClient *, pClient, int, nBytes, char *, data, int64, xuid)
 {
-	g_Interface.OnBroadcastVoiceData(pClient, nBytes, data);
-
-	DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, data, xuid);
+	if(g_Interface.OnBroadcastVoiceData(pClient, nBytes, data))
+		DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, data, xuid);
 }
 
 #ifdef _WIN32
@@ -81,12 +104,13 @@ DETOUR_DECL_STATIC2(SV_BroadcastVoiceData_LTCG, void, char *, data, int64, xuid)
 	__asm mov pClient, ecx;
 	__asm mov nBytes, edx;
 
-	g_Interface.OnBroadcastVoiceData(pClient, nBytes, data);
+	bool ret = g_Interface.OnBroadcastVoiceData(pClient, nBytes, data);
 
 	__asm mov ecx, pClient;
 	__asm mov edx, nBytes;
 
-	DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)(data, xuid);
+	if(ret)
+		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)(data, xuid);
 }
 #endif
 
@@ -409,14 +433,31 @@ void CVoice::OnGameFrame(bool simulating)
 {
 	HandleNetwork();
 	HandleVoiceData();
+
+	// Reset per-client voice byte counter to 0 every frame.
+	memset(g_aFrameVoiceBytes, 0, sizeof(g_aFrameVoiceBytes));
 }
 
-void CVoice::OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data)
+bool CVoice::OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data)
 {
 	int client = pClient->GetPlayerSlot() + 1;
 
 	g_fLastVoiceData[client] = gpGlobals->curtime;
-}
+
+	// Reject voice packet if we'd send more than NET_MAX_VOICE_BYTES_FRAME voice bytes from this client in the current frame.
+	g_aFrameVoiceBytes[client] += nBytes;
+
+	if(g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME)
+	{
+		if(g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME_LOG)
+		{
+			IGamePlayer *pPlayer = playerhelpers->GetGamePlayer(client);
+			smutils->LogMessage(myself, "%s (%s) voice overflow! %d > %d\n", pPlayer->GetName(), pPlayer->GetSteam2Id(true), g_aFrameVoiceBytes[client], NET_MAX_VOICE_BYTES_FRAME);
+		}
+		return false;
+	}
+	return true;
+ }
 
 void CVoice::HandleNetwork()
 {
@@ -456,7 +497,7 @@ void CVoice::HandleNetwork()
 			m_aPollFds[m_PollFds].revents = 0;
 			m_PollFds++;
 
-			smutils->LogMessage(myself, "Client %d connected!\n", Client);
+			//smutils->LogMessage(myself, "Client %d connected!\n", Client);
 		}
 	}
 
@@ -482,7 +523,7 @@ void CVoice::HandleNetwork()
 			pClient->m_Socket = -1;
 			m_aPollFds[PollFds].fd = -1;
 			CompressPollFds = true;
-			smutils->LogMessage(myself, "Client %d disconnected!(2)\n", Client);
+			//smutils->LogMessage(myself, "Client %d disconnected!(2)\n", Client);
 			continue;
 		}
 

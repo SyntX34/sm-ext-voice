@@ -48,6 +48,7 @@
 
 ConVar g_SmVoiceAddr("sm_voice_addr", "127.0.0.1", FCVAR_PROTECTED, "Voice server listen ip address.");
 ConVar g_SmVoicePort("sm_voice_port", "27020", FCVAR_PROTECTED, "Voice server listen port.", true, 1025.0, true, 65535.0);
+ConVar g_SmVoiceLogging("sm_voice_logging", "0", FCVAR_PROTECTED, "Log voice packets.");
 
 /**
  * @file extension.cpp
@@ -438,9 +439,21 @@ void CVoice::OnGameFrame(bool simulating)
 	memset(g_aFrameVoiceBytes, 0, sizeof(g_aFrameVoiceBytes));
 }
 
+
 bool CVoice::OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data)
 {
 	int client = pClient->GetPlayerSlot() + 1;
+	IGamePlayer *pPlayer = playerhelpers->GetGamePlayer(client);
+
+	if(nBytes < 1)
+	{
+		smutils->LogMessage(myself, "%s (%s): Empty voice packet", pPlayer->GetName(), pPlayer->GetSteam2Id(true), data);
+		return false;
+	}
+
+	// this is to log all voice packet
+	if (g_SmVoiceLogging.GetInt())
+		smutils->LogMessage(myself, "%s (%s): %s", pPlayer->GetName(), pPlayer->GetSteam2Id(true), data);
 
 	g_fLastVoiceData[client] = gpGlobals->curtime;
 
@@ -451,7 +464,6 @@ bool CVoice::OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data)
 	{
 		if(g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME_LOG)
 		{
-			IGamePlayer *pPlayer = playerhelpers->GetGamePlayer(client);
 			smutils->LogMessage(myself, "%s (%s) voice overflow! %d > %d\n", pPlayer->GetName(), pPlayer->GetSteam2Id(true), g_aFrameVoiceBytes[client], NET_MAX_VOICE_BYTES_FRAME);
 		}
 		return false;

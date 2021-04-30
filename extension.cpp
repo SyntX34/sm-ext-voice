@@ -46,9 +46,16 @@
 #include "CDetour/detours.h"
 #include "extension.h"
 
+// voice packets are sent over unreliable netchannel
+//#define NET_MAX_DATAGRAM_PAYLOAD	4000	// = maximum unreliable payload size
+// voice packetsize = 64 | netchannel overflows at >4000 bytes
+// with 22050 samplerate and 512 frames per packet -> 23.22ms per packet
+// SVC_VoiceData overhead = 5 bytes
+// sensible limit of 8 packets per frame = 552 bytes -> 185.76ms of voice data per frame
+#define NET_MAX_VOICE_BYTES_FRAME (8 * (5 + 64))
+
 ConVar g_SmVoiceAddr("sm_voice_addr", "127.0.0.1", FCVAR_PROTECTED, "Voice server listen ip address.");
 ConVar g_SmVoicePort("sm_voice_port", "27020", FCVAR_PROTECTED, "Voice server listen port.", true, 1025.0, true, 65535.0);
-ConVar g_SmVoiceLogging("sm_voice_logging", "0", FCVAR_PROTECTED, "Log voice packets.");
 
 /**
  * @file extension.cpp
@@ -66,29 +73,6 @@ IServer *iserver = NULL;
 
 double g_fLastVoiceData[SM_MAXPLAYERS + 1];
 int g_aFrameVoiceBytes[SM_MAXPLAYERS + 1];
-
-#define NET_MAX_VOICE_BYTES_FRAME 512
-#define NET_MAX_VOICE_BYTES_FRAME_LOG 1024
-
-/*
-// This is just the client_t->netchan.datagram buffer size (shouldn't ever need to be huge)
-#define NET_MAX_VOICE_BYTES_FRAME    4000    // = maximum unreliable payload size
-maybe try 1024 for starters
-instead of 4096
-voice data should never be that big
-actually I can give you a fool-proof number
-since I did tests for torchlight
-the packetsize is hardcoded 64 bytes
-torchlight sends max 5 frames at once to clients
-there are 512 frames per packet
-sample rate 22050
-so one packet is 23.2ms
-anyways, since torchlight only sends 5 packets at once, which is 5*64 = 320 bytes
-make the limit > 384 (6 * 64)
-I'm thinking the guy probably just sends a huge packet with max size 4000 or whatever to the server
-and it puts it in the netchan, which seems to be 4000 max big
-and then any other data in there overflows it
-*/
 
 DETOUR_DECL_STATIC4(SV_BroadcastVoiceData, void, IClient *, pClient, int, nBytes, char *, data, int64, xuid)
 {
@@ -328,6 +312,12 @@ const sp_nativeinfo_t MyNatives[] =
 	{ NULL, NULL }
 };
 
+static void ListenSocketAction(void *pData)
+{
+	CVoice *pThis = (CVoice *)pData;
+	pThis->ListenSocket();
+}
+
 void CVoice::SDK_OnAllLoaded()
 {
 	sharesys->AddNatives(myself, MyNatives);
@@ -366,8 +356,18 @@ void CVoice::SDK_OnAllLoaded()
 		return;
 	}
 
+	// This doesn't seem to work right away ...
 	engine->ServerCommand("exec sourcemod/extension.Voice.cfg\n");
 	engine->ServerExecute();
+
+	// ... delay starting listen server to next frame
+	smutils->AddFrameAction(ListenSocketAction, this);
+}
+
+void CVoice::ListenSocket()
+{
+	if(m_PollFds > 0)
+		return;
 
 	sockaddr_in bindAddr;
 	memset(&bindAddr, 0, sizeof(bindAddr));
@@ -439,37 +439,25 @@ void CVoice::OnGameFrame(bool simulating)
 	memset(g_aFrameVoiceBytes, 0, sizeof(g_aFrameVoiceBytes));
 }
 
-
 bool CVoice::OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data)
 {
-	int client = pClient->GetPlayerSlot() + 1;
-	IGamePlayer *pPlayer = playerhelpers->GetGamePlayer(client);
-
+	// Reject empty packets
 	if(nBytes < 1)
-	{
-		smutils->LogMessage(myself, "%s (%s): Empty voice packet", pPlayer->GetName(), pPlayer->GetSteam2Id(true), data);
 		return false;
-	}
 
-	// this is to log all voice packet
-	if (g_SmVoiceLogging.GetInt())
-		smutils->LogMessage(myself, "%s (%s): %s", pPlayer->GetName(), pPlayer->GetSteam2Id(true), data);
+	int client = pClient->GetPlayerSlot() + 1;
+
+	// Reject voice packet if we'd send more than NET_MAX_VOICE_BYTES_FRAME voice bytes from this client in the current frame.
+	// 5 = SVC_VoiceData header/overhead
+	g_aFrameVoiceBytes[client] += 5 + nBytes;
+
+	if(g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME)
+		return false;
 
 	g_fLastVoiceData[client] = gpGlobals->curtime;
 
-	// Reject voice packet if we'd send more than NET_MAX_VOICE_BYTES_FRAME voice bytes from this client in the current frame.
-	g_aFrameVoiceBytes[client] += nBytes;
-
-	if(g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME)
-	{
-		if(g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME_LOG)
-		{
-			smutils->LogMessage(myself, "%s (%s) voice overflow! %d > %d\n", pPlayer->GetName(), pPlayer->GetSteam2Id(true), g_aFrameVoiceBytes[client], NET_MAX_VOICE_BYTES_FRAME);
-		}
-		return false;
-	}
 	return true;
- }
+}
 
 void CVoice::HandleNetwork()
 {
@@ -503,6 +491,7 @@ void CVoice::HandleNetwork()
 			m_aClients[Client].m_LastLength = 0;
 			m_aClients[Client].m_LastValidData = 0.0;
 			m_aClients[Client].m_New = true;
+			m_aClients[Client].m_UnEven = false;
 
 			m_aPollFds[m_PollFds].fd = Socket;
 			m_aPollFds[m_PollFds].events = POLLIN | POLLHUP;
@@ -560,7 +549,16 @@ void CVoice::HandleNetwork()
 		if(min(BytesAvailable, sizeof(aBuf)) > m_Buffer.CurrentFree() * sizeof(int16_t))
 			continue;
 
-		ssize_t Bytes = recv(pClient->m_Socket, aBuf, sizeof(aBuf), 0);
+		// Edge case: previously received data is uneven and last recv'd byte has to be prepended
+		int Shift = 0;
+		if(pClient->m_UnEven)
+		{
+			Shift = 1;
+			aBuf[0] = pClient->m_Remainder;
+			pClient->m_UnEven = false;
+		}
+
+		ssize_t Bytes = recv(pClient->m_Socket, &aBuf[Shift], sizeof(aBuf) - Shift, 0);
 
 		if(Bytes <= 0)
 		{
@@ -568,8 +566,19 @@ void CVoice::HandleNetwork()
 			pClient->m_Socket = -1;
 			m_aPollFds[PollFds].fd = -1;
 			CompressPollFds = true;
-			smutils->LogMessage(myself, "Client %d disconnected!(1)\n", Client);
+			//smutils->LogMessage(myself, "Client %d disconnected!(1)\n", Client);
 			continue;
+		}
+
+		Bytes += Shift;
+
+		// Edge case: data received is uneven (can't be divided by two)
+		// store last byte, drop it here and prepend it right before the next recv
+		if(Bytes & 1)
+		{
+			pClient->m_UnEven = true;
+			pClient->m_Remainder = aBuf[Bytes - 1];
+			Bytes -= 1;
 		}
 
 		// Got data!

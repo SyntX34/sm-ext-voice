@@ -62,7 +62,7 @@ ConVar g_SmVoicePort("sm_voice_port", "27020", FCVAR_PROTECTED, "Voice server li
  * @brief Implement extension code here.
  */
 
-template <typename T> inline T min(T a, T b) { return a<b?a:b; }
+template <typename T> inline T min_ext(T a, T b) { return a<b?a:b; }
 
 CVoice g_Interface;
 SMEXT_LINK(&g_Interface);
@@ -483,7 +483,7 @@ void CVoice::HandleNetwork()
 		if(Client != MAX_CLIENTS)
 		{
 			sockaddr_in addr;
-			size_t size = sizeof(sockaddr_in);
+			socklen_t size = sizeof(sockaddr_in);
 			int Socket = accept(m_ListenSocket, (sockaddr *)&addr, &size);
 
 			m_aClients[Client].m_Socket = Socket;
@@ -546,7 +546,7 @@ void CVoice::HandleNetwork()
 
 		// Don't recv() when we can't fit data into the ringbuffer
 		unsigned char aBuf[32768];
-		if(min(BytesAvailable, sizeof(aBuf)) > m_Buffer.CurrentFree() * sizeof(int16_t))
+		if(min_ext(BytesAvailable, sizeof(aBuf)) > m_Buffer.CurrentFree() * sizeof(int16_t))
 			continue;
 
 		// Edge case: previously received data is uneven and last recv'd byte has to be prepended
@@ -657,7 +657,7 @@ void CVoice::HandleVoiceData()
 		return;
 
 	// 5 = max frames per packet
-	FramesAvailable = min(FramesAvailable, 5);
+	FramesAvailable = min_ext(FramesAvailable, 5);
 
 	// 0 = SourceTV
 	IClient *pClient = iserver->GetClient(0);
@@ -675,7 +675,7 @@ void CVoice::HandleVoiceData()
 
 		if(!m_Buffer.Pop(aBuffer, SamplesPerFrame))
 		{
-			printf("Buffer pop failed!!! Samples: %u, Length: %u\n", SamplesPerFrame, m_Buffer.TotalLength());
+			printf("Buffer pop failed!!! Samples: %u, Length: %zu\n", SamplesPerFrame, m_Buffer.TotalLength());
 			return;
 		}
 

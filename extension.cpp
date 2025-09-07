@@ -52,7 +52,6 @@
 // with 22050 samplerate and 512 frames per packet -> 23.22ms per packet
 // SVC_VoiceData overhead = 5 bytes
 // sensible limit of 8 packets per frame = 552 bytes -> 185.76ms of voice data per frame
-//#define NET_MAX_VOICE_BYTES_FRAME (15 * (5 + 64))
 #define NET_MAX_VOICE_BYTES_FRAME (8 * (5 + 64))
 
 ConVar g_SmVoiceAddr("sm_voice_addr", "127.0.0.1", FCVAR_PROTECTED, "Voice server listen ip address.");
@@ -301,13 +300,9 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 
     // Encoder settings
     m_EncoderSettings.InputSampleRate_kHz = 32; // 8, 12, 16, 24, 32, 44.1, 48
-    //m_EncoderSettings.InputSampleRate_kHz = 24; // 8, 12, 16, 24, 32, 44.1, 48
     m_EncoderSettings.OutputSampleRate_kHz = 24; // 8, 12, 16, 24
-    //m_EncoderSettings.OutputSampleRate_kHz = 24; // 8, 12, 16, 24
     m_EncoderSettings.TargetBitRate_Kbps = 100; // 6 - 40
     m_EncoderSettings.PacketSize_ms = 15; // 20, 40, 60, 80, 100
-    //m_EncoderSettings.PacketSize_ms = 40; // 20, 40, 60, 80, 100
-    //m_EncoderSettings.FrameSize_ms = 40; //
     m_EncoderSettings.FrameSize_ms = 15; //
     m_EncoderSettings.PacketLoss_perc = 0; // 0 - 100
     m_EncoderSettings.Complexity = 2; // 0 - 2
@@ -726,11 +721,8 @@ struct SteamVoiceHeader
 
 void CVoice::HandleVoiceData()
 {
-	//int SamplesPerFrame = 480; //120, 240, 480, 960, 1920. 
     int SamplesPerFrame = (m_EncoderSettings.FrameSize_ms * m_EncoderSettings.InputSampleRate_kHz);
-
 	int FramesAvailable = m_Buffer.TotalLength() / SamplesPerFrame;
-	//float TimeAvailable = (float)m_Buffer.TotalLength() / SamplesPerFrame;
     float TimeAvailable = (float)m_Buffer.TotalLength() / (m_EncoderSettings.InputSampleRate_kHz * 1000.0);
 
 	if(!FramesAvailable)
@@ -743,19 +735,17 @@ void CVoice::HandleVoiceData()
 	// let the clients have no more than 500ms
 	if(m_AvailableTime > getTime() + 0.5)
     {
-        smutils->LogMessage(myself, "inside return", FramesAvailable);
 		return;
     }
 
     
-    smutils->LogMessage(myself, "pre FramesAvailable: %d", FramesAvailable);
-    smutils->LogMessage(myself, "TotalLength: %d", m_Buffer.TotalLength());
-    smutils->LogMessage(myself, "TimeAvailable: %f", TimeAvailable);
-    smutils->LogMessage(myself, "SamplesPerFrame: %d", SamplesPerFrame);
+    //smutils->LogMessage(myself, "pre FramesAvailable: %d", FramesAvailable);
+    //smutils->LogMessage(myself, "TotalLength: %d", m_Buffer.TotalLength());
+    //smutils->LogMessage(myself, "TimeAvailable: %f", TimeAvailable);
+    //smutils->LogMessage(myself, "SamplesPerFrame: %d", SamplesPerFrame);
 
 	// 5 = max frames per packet
 	FramesAvailable = min_ext(FramesAvailable, 5);
-	//FramesAvailable = min_ext(FramesAvailable, 5);
 
 	// 0 = SourceTV
 	IClient *pClient = iserver->GetClient(0);
@@ -797,7 +787,6 @@ void CVoice::HandleVoiceData()
         // Encode it!
         int Ret = SKP_Silk_SDK_Encode(m_Silk_EncoderState, &m_Silk_EncoderControl, aBuffer,
             SamplesPerFrame, &aFinal[FinalSize], pFrameSize);
-        //smutils->LogMessage(myself, "pFrameSize: %d", *pFrameSize);
         if(Ret)
         {
             smutils->LogError(myself, "SKP_Silk_SDK_Encode returned %d\n", Ret);
@@ -813,11 +802,7 @@ void CVoice::HandleVoiceData()
             CClient *pClient = &m_aClients[Client];
             if(pClient->m_Socket == -1 || pClient->m_New == true)
                 continue;
-            /*
-            pClient->m_BufferWriteIndex = m_Buffer.GetReadIndex();
-            m_Buffer.SetWriteIndex(pClient->m_BufferWriteIndex);
-            pClient->m_LastLength = m_Buffer.CurrentLength();
-            */
+
             m_Buffer.SetWriteIndex(pClient->m_BufferWriteIndex);
 
             if(m_Buffer.CurrentLength() > pClient->m_LastLength)

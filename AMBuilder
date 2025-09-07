@@ -9,6 +9,7 @@ projectName = 'Voice'
 project = builder.LibraryProject(projectName)
 project.sources += [
   'extension.cpp',
+  'ringbuffer.cpp',
   os.path.join(SM.sm_root, 'public', 'smsdk_ext.cpp')
 ]
 
@@ -34,11 +35,11 @@ for sdk_name in SM.sdks:
 	]
 
     binary.compiler.cxxincludes += [
-        os.path.join(builder.sourcePath, 'celt')
+        os.path.join(SM.sm_root, 'public', 'extensions'),
+        os.path.join(builder.sourcePath, 'silk')
     ]
     binary.compiler.linkflags += [
-        os.path.join(builder.sourcePath, 'celt', 'libcelt0.a')
+        os.path.join(builder.sourcePath, 'silk', 'libSKP_SILK_SDK.a')
     ]
-
 
 SM.extensions += builder.Add(project)

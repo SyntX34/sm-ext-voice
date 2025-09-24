@@ -34,7 +34,6 @@
 
 #include <poll.h>
 #include "smsdk_ext.h"
-#include <SKP_Silk_SDK_API.h>
 #include "ringbuffer.h"
 
 /**
@@ -160,23 +159,10 @@ private:
 
 	CRingBuffer m_Buffer;
 
+    OpusEncoder *m_OpusEncoder;
+
 	double m_AvailableTime;
 
-    struct CEncoderSettings
-    {
-        SKP_int InputSampleRate_kHz;
-        SKP_int OutputSampleRate_kHz;
-        SKP_int TargetBitRate_Kbps;
-        SKP_int PacketSize_ms;
-        SKP_int FrameSize_ms;
-        SKP_int PacketLoss_perc;
-        SKP_int Complexity;
-        SKP_int InBandFEC;
-        SKP_int DTX;
-    } m_EncoderSettings;
-    
-    void *m_Silk_EncoderState;
-    SKP_SILK_SDK_EncControlStruct m_Silk_EncoderControl;
 
 	t_SV_BroadcastVoiceData m_SV_BroadcastVoiceData;
 	CDetour *m_VoiceDetour;

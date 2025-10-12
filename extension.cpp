@@ -300,21 +300,26 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 
     //opus edit
     int err;
-    m_OpusEncoder = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &err);
+    //m_OpusEncoder = opus_encoder_create(48000, 2, OPUS_APPLICATION_VOIP, &err);
+    //m_OpusEncoder = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &err);I //content, broadcast, and applications requiring less than 15 ms of coding delay.
+    m_OpusEncoder = opus_encoder_create(48000, 1, OPUS_APPLICATION_VOIP, &err);
     if (err<0)
     {
 		smutils->LogError(myself, "failed to create encode: %s", opus_strerror(err));
         return false;
     }
-    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(64000)); //*(_DWORD *)(v0 + 12) = 32000;
-    //i dont know if these actually matter.
-    /*
-    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_FORCE_CHANNELS(1)); 
-    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_INBAND_FEC(1)); 
-    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PACKET_LOSS_PERC(10)); 
-    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_COMPLEXITY(10)); 
-    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE)); 
-    */
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(48000));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_NARROWBAND)); // Force SILK mode
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_MAX_BANDWIDTH(OPUS_BANDWIDTH_NARROWBAND));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_COMPLEXITY(10));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_VBR(0));
+
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_DTX(0));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_INBAND_FEC(1));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PACKET_LOSS_PERC(15));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PREDICTION_DISABLED(0)); // Enable prediction
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_LSB_DEPTH(16)); // 16-bit samples
+
     if (err<0)
     {
         smutils->LogError(myself, "failed to set bitrate: %s\n", opus_strerror(err));
@@ -669,7 +674,7 @@ void CVoice::OnDataReceived(CClient *pClient, int16_t *pData, size_t Samples)
 	// Discard empty data if last vaild data was more than a second ago.
 	if(pClient->m_LastValidData + 1.0 < getTime())
 	{
-		// All emptyTotalSamplesPerFrame
+		// All empty
 		if(DataStartsAt == -1)
 			return;
 
@@ -677,8 +682,6 @@ void CVoice::OnDataReceived(CClient *pClient, int16_t *pData, size_t Samples)
 		pData += DataStartsAt;
 		Samples -= DataStartsAt;
 	}
-
-    smutils->LogMessage(myself, "OnDataReceived samples: %d", Samples);
 
 	if(!m_Buffer.Push(pData, Samples))
 	{
@@ -701,101 +704,101 @@ struct SteamVoiceHeader
 
 void CVoice::HandleVoiceData()
 {
-    //const int SampleRate = 24000;
     const int SampleRate = 48000;
-    // This MUST be the number of SAMPLES PER CHANNEL (960 samples = 20ms at 48kHz)
-    //const int SamplesPerChannel = 480;
-    const int SamplesPerChannel = 960;
-    const int Channels = 2;
+    const int SamplesPerChannel = 480;
+    const int Channels = 1;
+    int TotalSamplesPerFrame = SamplesPerChannel * Channels;
 
-	int FramesAvailable = m_Buffer.TotalLength() / SamplesPerChannel;
-    float TimeAvailable = (float)m_Buffer.TotalLength() / (SampleRate);
+    int FramesAvailable = m_Buffer.TotalLength() / TotalSamplesPerFrame;
+    float TimeAvailable = (float)m_Buffer.TotalLength() / SampleRate;
 
     if(!FramesAvailable)
         return;
-
-    // Before starting playback we want at least 100ms in the buffer
-    if(m_AvailableTime < getTime() && TimeAvailable < 0.1)
-    {
-        //smutils->LogMessage(myself, "return 1");
+    //if(m_AvailableTime < getTime() && TimeAvailable < 0.1)
+    if(m_AvailableTime < getTime() && TimeAvailable < 0.05)
         return;
-    }
-
-    //let the clients have no more than 500ms
     if(m_AvailableTime > getTime() + 0.5)
-    {
-        //smutils->LogMessage(myself, "return 2");
         return;
-    }
-
-    // The Opus encoder requires a complete frame.
-    int TotalSamplesPerFrame = SamplesPerChannel * Channels;
-    if (m_Buffer.TotalLength() < TotalSamplesPerFrame) {
+    if (m_Buffer.TotalLength() < TotalSamplesPerFrame)
         return;
-    }
 
-    smutils->LogMessage(myself, "pre FramesAvailable: %d", FramesAvailable);
-    //smutils->LogMessage(myself, "TotalLength: %d", m_Buffer.TotalLength());
-    smutils->LogMessage(myself, "TimeAvailable: %f", TimeAvailable);
+    FramesAvailable = min_ext(FramesAvailable, 5);
 
-	// 5 = max frames per packet
-	FramesAvailable = min_ext(FramesAvailable, 5);
+    IClient *pClient = iserver->GetClient(0);
+    if(!pClient)
+        return;
 
-	// 0 = SourceTV
-	IClient *pClient = iserver->GetClient(0);
-	if(!pClient)
-		return;
+    unsigned char aFinal[8192];
+    size_t FinalSize = 0;
 
-    SteamVoiceHeader Header;
-    size_t HeaderSize = 14;
-    Header.iSteamAccountID = 1; // Steam Account ID
-    Header.iSteamCommunity = 0x01100001; // Steam Community ID part: 0x01100001 << 32
-    Header.nPayload1 = 11; // nPayLoad | Type 11 = 
-    Header.iSampleRate = SampleRate; // 
-    Header.nPayload2 = 0x06; //type 6 = opus PLC?
-    //Header.nPayload2 = 4; // nPayLoad | Type 4 = Silk Frames
-    Header.iDataLength = 0; // Silk Frames total length
+    // 1. Steam Account ID (4 bytes)
+    uint32_t steamID = 1;
+    memcpy(&aFinal[FinalSize], &steamID, sizeof(uint32_t));
+    FinalSize += sizeof(uint32_t);
 
-    //unsigned char aFinal[4000]; //max_packet is the maximum number of bytes that can be written in the packet (4000 bytes is recommended).
+    // 2. Steam Community (4 bytes)
+    uint32_t steamCommunity = 0x01100001;
+    memcpy(&aFinal[FinalSize], &steamCommunity, sizeof(uint32_t));
+    FinalSize += sizeof(uint32_t);
 
-    unsigned char aFinal[8192]; // A large buffer for the final packet.
-    size_t FinalSize = HeaderSize;
+    // 3. Payload Type 11 (1 byte)
+    aFinal[FinalSize++] = 0x0B;
 
+    // 4. Sample Rate (2 bytes little-endian)
+    uint16_t sampleRate = 48000;
+    memcpy(&aFinal[FinalSize], &sampleRate, sizeof(uint16_t));
+    FinalSize += sizeof(uint16_t);
+
+    // 5. Payload Type 6 for Opus (1 byte)
+    aFinal[FinalSize++] = 0x05;
+
+    // 6. Reserve space for total data length (2 bytes little-endian)
+    uint16_t *pTotalDataLength = (uint16_t*)&aFinal[FinalSize];
+    FinalSize += sizeof(uint16_t);
+    *pTotalDataLength = 0;
+
+    // 7. Encode frames
     for(int Frame = 0; Frame < FramesAvailable; Frame++)
-	{
+    {
         int16_t aBuffer[TotalSamplesPerFrame];
 
         size_t OldReadIdx = m_Buffer.m_ReadIndex;
-        size_t OldCurLength = m_Buffer.CurrentLength();
-        size_t OldTotalLength = m_Buffer.TotalLength();
+		size_t OldCurLength = m_Buffer.CurrentLength();
+		size_t OldTotalLength = m_Buffer.TotalLength();
 
         if(!m_Buffer.Pop(aBuffer, TotalSamplesPerFrame))
         {
-            smutils->LogError(myself, "Buffer pop failed!!! Samples: %u, Length: %zu\n", TotalSamplesPerFrame, m_Buffer.TotalLength());
+            smutils->LogError(myself, "Buffer pop failed!");
             return;
         }
 
-        FinalSize += sizeof(int16_t);
-        Header.iDataLength += sizeof(int16_t);
+        uint16_t *pFrameSize = (uint16_t*)&aFinal[FinalSize];
+        FinalSize += sizeof(uint16_t);
+        *pFrameSize = sizeof(aFinal) - sizeof(uint32_t) - FinalSize;
 
-        //	opus_int16*: Input signal (interleaved if 2 channels). length is frame_size*channels*sizeof(opus_int16) 
-        int nbBytes = opus_encode(m_OpusEncoder, (const opus_int16*)aBuffer, SamplesPerChannel, &aFinal[FinalSize], sizeof(aFinal));
-        // Handle DTX (Discontinuous Transmission). If the length is 1, no data should be sent.
-        if (nbBytes<=1)
+        // Encode with Opus
+        int nbBytes = opus_encode(m_OpusEncoder, (const opus_int16*)aBuffer, SamplesPerChannel,
+                                  &aFinal[FinalSize], *pFrameSize);
+
+        if (nbBytes <= 1)
         {
-            smutils->LogError(myself, "encode failed: %s\n", opus_strerror(nbBytes));
+            smutils->LogError(myself, "Opus encode failed: %s", opus_strerror(nbBytes));
             return;
         }
 
-        // Check for buffer underruns
-		for(int Client = 0; Client < MAX_CLIENTS; Client++)
-		{
+        // Write frame size
+        *pFrameSize = (uint16_t)nbBytes;
+        *pTotalDataLength += sizeof(uint16_t) + nbBytes;
+        FinalSize += nbBytes;
+
+        // Buffer underrun check
+        for(int Client = 0; Client < MAX_CLIENTS; Client++)
+        {
             CClient *pClient = &m_aClients[Client];
             if(pClient->m_Socket == -1 || pClient->m_New == true)
                 continue;
 
             m_Buffer.SetWriteIndex(pClient->m_BufferWriteIndex);
-
             if(m_Buffer.CurrentLength() > pClient->m_LastLength)
             {
                 pClient->m_BufferWriteIndex = m_Buffer.GetReadIndex();
@@ -803,24 +806,26 @@ void CVoice::HandleVoiceData()
                 pClient->m_LastLength = m_Buffer.CurrentLength();
             }
         }
-        Header.iDataLength += nbBytes;
-        FinalSize += nbBytes;
     }
-    memcpy(&aFinal[0], &Header, HeaderSize);
 
-    // Calculate the total packet size for CRC32 calculation.
-    //these 3 lines are fine
+    // 8. Add CRC32
     uint32_t crc32_value = UTIL_CRC32(aFinal, FinalSize);
     memcpy(&aFinal[FinalSize], &crc32_value, sizeof(uint32_t));
     FinalSize += sizeof(uint32_t);
 
-    //18 in distance between finalsize and idatalength, 14 for header bytes and 4 for CRC.
-    smutils->LogMessage(myself, "FinalSize: %d. iDataLength: %d. length of aFinal: %d", FinalSize, Header.iDataLength, sizeof(aFinal));
+    /*
+    smutils->LogMessage(myself, "=== OPUS PACKET ===");
+    smutils->LogMessage(myself, "FinalSize: %d, Frames: %d", FinalSize, FramesAvailable);
+    smutils->LogMessage(myself, "Header bytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+        aFinal[0], aFinal[1], aFinal[2], aFinal[3], aFinal[4], aFinal[5], aFinal[6],
+        aFinal[7], aFinal[8], aFinal[9], aFinal[10], aFinal[11], aFinal[12], aFinal[13]);
+    */
+
     BroadcastVoiceData(pClient, FinalSize, aFinal);
 
     if (m_AvailableTime < getTime())
         m_AvailableTime = getTime();
-    m_AvailableTime += (double)FramesAvailable * ((double)20 / 1000.0);
+    m_AvailableTime += (double)FramesAvailable * 0.01;
 }
 
 void CVoice::BroadcastVoiceData(IClient *pClient, int nBytes, unsigned char *pData)

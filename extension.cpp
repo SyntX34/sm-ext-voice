@@ -300,8 +300,6 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 
     //opus edit
     int err;
-    //m_OpusEncoder = opus_encoder_create(48000, 2, OPUS_APPLICATION_VOIP, &err);
-    //m_OpusEncoder = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &err);I //content, broadcast, and applications requiring less than 15 ms of coding delay.
     m_OpusEncoder = opus_encoder_create(48000, 1, OPUS_APPLICATION_VOIP, &err);
     if (err<0)
     {
@@ -309,8 +307,8 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
         return false;
     }
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(48000));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_NARROWBAND)); // Force SILK mode
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_MAX_BANDWIDTH(OPUS_BANDWIDTH_NARROWBAND));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_WIDEBAND));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_MAX_BANDWIDTH(OPUS_BANDWIDTH_WIDEBAND));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_COMPLEXITY(10));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_VBR(0));
 
@@ -762,10 +760,6 @@ void CVoice::HandleVoiceData()
     {
         int16_t aBuffer[TotalSamplesPerFrame];
 
-        size_t OldReadIdx = m_Buffer.m_ReadIndex;
-		size_t OldCurLength = m_Buffer.CurrentLength();
-		size_t OldTotalLength = m_Buffer.TotalLength();
-
         if(!m_Buffer.Pop(aBuffer, TotalSamplesPerFrame))
         {
             smutils->LogError(myself, "Buffer pop failed!");
@@ -790,36 +784,12 @@ void CVoice::HandleVoiceData()
         *pFrameSize = (uint16_t)nbBytes;
         *pTotalDataLength += sizeof(uint16_t) + nbBytes;
         FinalSize += nbBytes;
-
-        // Buffer underrun check
-        for(int Client = 0; Client < MAX_CLIENTS; Client++)
-        {
-            CClient *pClient = &m_aClients[Client];
-            if(pClient->m_Socket == -1 || pClient->m_New == true)
-                continue;
-
-            m_Buffer.SetWriteIndex(pClient->m_BufferWriteIndex);
-            if(m_Buffer.CurrentLength() > pClient->m_LastLength)
-            {
-                pClient->m_BufferWriteIndex = m_Buffer.GetReadIndex();
-                m_Buffer.SetWriteIndex(pClient->m_BufferWriteIndex);
-                pClient->m_LastLength = m_Buffer.CurrentLength();
-            }
-        }
     }
 
     // 8. Add CRC32
     uint32_t crc32_value = UTIL_CRC32(aFinal, FinalSize);
     memcpy(&aFinal[FinalSize], &crc32_value, sizeof(uint32_t));
     FinalSize += sizeof(uint32_t);
-
-    /*
-    smutils->LogMessage(myself, "=== OPUS PACKET ===");
-    smutils->LogMessage(myself, "FinalSize: %d, Frames: %d", FinalSize, FramesAvailable);
-    smutils->LogMessage(myself, "Header bytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-        aFinal[0], aFinal[1], aFinal[2], aFinal[3], aFinal[4], aFinal[5], aFinal[6],
-        aFinal[7], aFinal[8], aFinal[9], aFinal[10], aFinal[11], aFinal[12], aFinal[13]);
-    */
 
     BroadcastVoiceData(pClient, FinalSize, aFinal);
 

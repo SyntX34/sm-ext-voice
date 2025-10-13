@@ -311,14 +311,8 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_MAX_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_COMPLEXITY(10));
 
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_EXPERT_FRAME_DURATION(OPUS_FRAMESIZE_10_MS));
-
-    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_VBR(0));
-    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_DTX(0));
-    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_INBAND_FEC(1));
-    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PACKET_LOSS_PERC(0));
-    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PREDICTION_DISABLED(0)); // Enable prediction
-    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_LSB_DEPTH(24)); // 16-bit samples
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC)); 
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_LSB_DEPTH(16)); 
 
     if (err<0)
     {

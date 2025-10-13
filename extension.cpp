@@ -300,23 +300,25 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 
     //opus edit
     int err;
-    m_OpusEncoder = opus_encoder_create(48000, 1, OPUS_APPLICATION_VOIP, &err);
+    m_OpusEncoder = opus_encoder_create(48000, 1, OPUS_APPLICATION_AUDIO, &err);
     if (err<0)
     {
 		smutils->LogError(myself, "failed to create encode: %s", opus_strerror(err));
         return false;
     }
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(48000));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_WIDEBAND));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_MAX_BANDWIDTH(OPUS_BANDWIDTH_WIDEBAND));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(64000));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_MAX_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_COMPLEXITY(10));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_VBR(0));
 
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_DTX(0));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_INBAND_FEC(1));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PACKET_LOSS_PERC(15));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PREDICTION_DISABLED(0)); // Enable prediction
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_LSB_DEPTH(16)); // 16-bit samples
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_EXPERT_FRAME_DURATION(OPUS_FRAMESIZE_10_MS));
+
+    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_VBR(0));
+    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_DTX(0));
+    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_INBAND_FEC(1));
+    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PACKET_LOSS_PERC(0));
+    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PREDICTION_DISABLED(0)); // Enable prediction
+    //opus_encoder_ctl(m_OpusEncoder, OPUS_SET_LSB_DEPTH(24)); // 16-bit samples
 
     if (err<0)
     {
@@ -712,10 +714,9 @@ void CVoice::HandleVoiceData()
 
     if(!FramesAvailable)
         return;
-    //if(m_AvailableTime < getTime() && TimeAvailable < 0.1)
     if(m_AvailableTime < getTime() && TimeAvailable < 0.05)
         return;
-    if(m_AvailableTime > getTime() + 0.5)
+    if(m_AvailableTime > getTime() + 0.02)
         return;
     if (m_Buffer.TotalLength() < TotalSamplesPerFrame)
         return;

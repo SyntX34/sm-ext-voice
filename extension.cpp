@@ -306,7 +306,8 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 		smutils->LogError(myself, "failed to create encode: %s", opus_strerror(err));
         return false;
     }
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(64000));
+
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(512000));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_MAX_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_COMPLEXITY(10));

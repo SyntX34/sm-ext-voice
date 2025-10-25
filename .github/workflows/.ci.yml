@@ -1,0 +1,76 @@
+name: Opus
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      - opus
+    tags:
+      - "*"
+  pull_request:
+    branches:
+      - master
+      - main
+      - opus
+
+jobs:
+  # install-protobuf:
+  #   runs-on: ubuntu-20.04
+  #   env:
+  #     PROTOBUF_REF: 'v2.5.0'
+  #     # Before Counter strike 2 changes
+  #     PROTOBUF_VALVE_REF: '02c5c94089d46fb14d8d94a4791e8cad7eef2d63'
+  #   steps:
+  #     - name: Checkout valve protobuf
+  #       uses: actions/checkout@v4
+  #       with:
+  #         repository: SteamDatabase/Protobufs
+  #         ref: ${{ env.PROTOBUF_VALVE_REF }}
+  #         path: protobuf-valve
+  #         submodules: recursive
+
+  #     - name: Checkout protobuf
+  #       uses: actions/checkout@v4
+  #       with:
+  #         repository: protocolbuffers/protobuf
+  #         ref: ${{ env.PROTOBUF_REF }}
+  #         path: protobuf
+  #         submodules: recursive
+
+  #     - name: Install protobuf
+  #       shell: bash
+  #       run: |
+  #         export EXTENSION_ROOT_DIR=$(pwd)
+  #         cd protobuf
+
+  #         # sh autogen.sh
+
+  #         # Fix because autogen in protobuf 2.5.0 doesnt work anymore
+  #         autoreconf -f -i -Wall,no-obsolete
+  #         rm -rf autom4te.cache config.h.in~
+
+  #         # Make sure to compile for 32bit with old ABI for std::string compatibility
+  #         ./configure --prefix=$EXTENSION_ROOT_DIR/protobuf --build=i686-pc-linux-gnu "CFLAGS=-m32 -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++14" "CXXFLAGS=-m32 -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++14" "LDFLAGS=-m32 -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++14" --disable-shared --enable-static
+  #         make -j 8
+  #         make install
+
+  #         # Compile .proto files to c++
+
+  #         cd ../protobuf-valve
+
+  #         # Counter strike 2 ?
+  #         # ../protobuf/bin/protoc -I=$PWD -I=$PWD/csgo $PWD/csgo/networksystem_protomessages.proto --cpp_out=$PWD
+  #         # ../protobuf/bin/protoc -I=$PWD -I=$PWD/csgo $PWD/csgo/network_connection.proto --cpp_out=$PWD
+  #         # ../protobuf/bin/protoc -I=$PWD -I=$PWD/csgo $PWD/csgo/networkbasetypes.proto --cpp_out=$PWD
+
+  #         # CSGO
+  #         ../protobuf/bin/protoc -I=$PWD $PWD/google/protobuf/descriptor.proto --cpp_out=$PWD
+  #         ../protobuf/bin/protoc -I=$PWD -I=$PWD/csgo $PWD/csgo/netmessages.proto --cpp_out=$PWD
+  #         ls -all
+
+  build-release-extension:
+    uses: srcdslab/ci-workflows/.github/workflows/shared_build_release_am_extension.yml@v1
+    # needs: install-protobuf
+    with:
+      sdks: "css"

@@ -758,6 +758,41 @@ bool CVoice::IsClientCurrentlyTalking(int client)
     return (timeSinceLastVoice >= 0 && timeSinceLastVoice < 0.33);
 }
 
+double CVoice::GetSessionStartTime(int client)
+{
+    if (client >= 0 && client <= SM_MAXPLAYERS)
+        return m_SessionStartTime[client];
+    return 0.0;
+}
+
+size_t CVoice::GetSessionBytes(int client)
+{
+    if (client >= 0 && client <= SM_MAXPLAYERS)
+        return m_SessionBytes[client];
+    return 0;
+}
+
+void CVoice::ResetSession(int client)
+{
+    if (client >= 0 && client <= SM_MAXPLAYERS)
+    {
+        m_SessionStartTime[client] = 0.0;
+        m_SessionBytes[client] = 0;
+    }
+}
+
+void CVoice::SetSessionStartTime(int client, double time)
+{
+    if (client >= 0 && client <= SM_MAXPLAYERS)
+        m_SessionStartTime[client] = time;
+}
+
+void CVoice::AddSessionBytes(int client, size_t bytes)
+{
+    if (client >= 0 && client <= SM_MAXPLAYERS)
+        m_SessionBytes[client] += bytes;
+}
+
 // Print voice status for all players
 void CVoice::PrintVoiceStatus(int outputClient)
 {

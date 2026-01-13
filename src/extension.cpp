@@ -63,13 +63,6 @@
 #include "convarhelper.h"
 
 // voice packets are sent over unreliable netchannel
-//#define NET_MAX_DATAGRAM_PAYLOAD	4000	// = maximum unreliable payload size
-// voice packetsize = 64 | netchannel overflows at >4000 bytes
-// 2009 Games with 22050 samplerate and 512 frames per packet -> 23.22ms per packet
-// Newer games with 44100 samplerate and 512 frames per packet -> 11.60ms per packet
-// 2009 Games SVC_VoiceData overhead = 5 bytes
-// 2009 Games sensible limit of 8 packets per frame = 552 bytes -> 185.76ms of voice data per frame
-// Newer games sensible limit of 8 packets per frame = 552 bytes -> 82.80ms of voice data per frame
 #define NET_MAX_VOICE_BYTES_FRAME (8 * (5 + 64))
 
 ConVar *g_SvLogging = CreateConVar("sm_voice_logging", "0", FCVAR_NOTIFY, "Log client connections");
@@ -170,72 +163,65 @@ std::string hex_to_string(const std::string& input)
 #if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
 void PrintCCLCMsg_VoiceData(const char *funcName, int client, const CCLCMsg_VoiceData &msg, bool drop)
 {
-	g_pSM->LogMessage(myself, "===START=======%s=============", funcName);
-	g_pSM->LogMessage(myself, "client %d", client);
-	g_pSM->LogMessage(myself, "drop %d", drop);
+    if (!g_SvLogging->GetInt()) return;
+    
+    g_pSM->LogMessage(myself, "===START=======%s=============", funcName);
+    g_pSM->LogMessage(myself, "client %d", client);
+    g_pSM->LogMessage(myself, "drop %d", drop);
 
-	if (msg.xuid())
-		g_pSM->LogMessage(myself, "Msg XUID: %" PRId64, msg.xuid());
+    if (msg.xuid())
+        g_pSM->LogMessage(myself, "Msg XUID: %" PRId64, msg.xuid());
 
-	g_pSM->LogMessage(myself, "Msg Format: %d", msg.format());
-	g_pSM->LogMessage(myself, "Msg sequence_bytes %d", msg.sequence_bytes());
-	if (msg.has_data())
-	{
-		g_pSM->LogMessage(myself, "Msg Data Size: %d", msg.data().size());
-		g_pSM->LogMessage(myself, "Msg Data Size: %zu", msg.data().size());
-		g_pSM->LogMessage(myself, "Msg Data Length: %d", msg.data().length());
-		g_pSM->LogMessage(myself, "Msg Data Length: %zu", msg.data().length());
-		g_pSM->LogMessage(myself, "Msg Data: %s", msg.data().c_str());
-
-		std::string hex_value = string_to_hex(msg.data().c_str());
-		g_pSM->LogMessage(myself, "Msg Data: %s", hex_value.c_str());
-	}
-	g_pSM->LogMessage(myself, "Msg section_number %d", msg.section_number());
-	g_pSM->LogMessage(myself, "Msg uncompressed_sample_offset %d", msg.uncompressed_sample_offset());
-	g_pSM->LogMessage(myself, "Msg uncompressed_sample_offset PRId32 %" PRId32, msg.uncompressed_sample_offset());
-	g_pSM->LogMessage(myself, "===END=======%s================", funcName);
+    g_pSM->LogMessage(myself, "Msg Format: %d", msg.format());
+    g_pSM->LogMessage(myself, "Msg sequence_bytes %d", msg.sequence_bytes());
+    if (msg.has_data())
+    {
+        g_pSM->LogMessage(myself, "Msg Data Size: %d", msg.data().size());
+        g_pSM->LogMessage(myself, "Msg Data: %s", string_to_hex(msg.data().c_str()).c_str());
+    }
+    g_pSM->LogMessage(myself, "Msg section_number %d", msg.section_number());
+    g_pSM->LogMessage(myself, "Msg uncompressed_sample_offset %d", msg.uncompressed_sample_offset());
+    g_pSM->LogMessage(myself, "===END=======%s================", funcName);
 }
 
 DETOUR_DECL_STATIC3(SV_BroadcastVoiceData_CSGO, int, IClient *, pClient, const CCLCMsg_VoiceData &, msg, bool, drop)
 {
-	if (g_SvLogging->GetInt())
-		PrintCCLCMsg_VoiceData("SV_BroadcastVoiceData_CSGO", pClient->GetPlayerSlot() + 1, msg, drop);
+    if (g_SvLogging->GetInt())
+        PrintCCLCMsg_VoiceData("SV_BroadcastVoiceData_CSGO", pClient->GetPlayerSlot() + 1, msg, drop);
 
-	if (g_Interface.OnBroadcastVoiceData(pClient, msg.data().size(), (char*)msg.data().c_str()))
-		return DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, drop);
+    if (pClient && g_Interface.OnBroadcastVoiceData(pClient, msg.data().size(), (char*)msg.data().c_str()))
+        return DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, drop);
 
-	// Return CSVCMsg_VoiceData::~CSVCMsg_VoiceData((CSVCMsg_VoiceData *)v48); but return value not used in
-	// bool CGameClient::CLCMsg_VoiceData( const CCLCMsg_VoiceData& msg ) so wtf ???
-	return 1;
+    return 1;
 }
 #endif
 
 DETOUR_DECL_STATIC4(SV_BroadcastVoiceData, void, IClient *, pClient, int, nBytes, char *, data, int64, xuid)
 {
-	if (g_Interface.OnBroadcastVoiceData(pClient, nBytes, data))
-		DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, data, xuid);
+    if (pClient && g_Interface.OnBroadcastVoiceData(pClient, nBytes, data))
+        DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, data, xuid);
 }
 
 #ifdef _WIN32
 DETOUR_DECL_STATIC2(SV_BroadcastVoiceData_LTCG, void, char *, data, int64, xuid)
 {
-	IClient *pClient = NULL;
-	int nBytes = 0;
+    IClient *pClient = NULL;
+    int nBytes = 0;
 
 #ifndef WIN64
-	__asm mov pClient, ecx;
-	__asm mov nBytes, edx;
+    __asm mov pClient, ecx;
+    __asm mov nBytes, edx;
 #endif
 
-	bool ret = g_Interface.OnBroadcastVoiceData(pClient, nBytes, data);
+    bool ret = g_Interface.OnBroadcastVoiceData(pClient, nBytes, data);
 
 #ifndef WIN64
-	__asm mov ecx, pClient;
-	__asm mov edx, nBytes;
+    __asm mov ecx, pClient;
+    __asm mov edx, nBytes;
 #endif
 
-	if (ret)
-		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)(data, xuid);
+    if (ret)
+        DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)(data, xuid);
 }
 #endif
 
@@ -247,7 +233,6 @@ double getTime() {
     }
     return static_cast<double>(count.QuadPart) / static_cast<double>(freq.QuadPart);
 }
-
 #else
 double getTime() {
     struct timespec tv;
@@ -260,221 +245,225 @@ double getTime() {
 
 void OnGameFrame(bool simulating)
 {
-	g_Interface.OnGameFrame(simulating);
+    g_Interface.OnGameFrame(simulating);
 }
 
 CVoice::CVoice()
 {
-	m_ListenSocket = -1;
+    m_ListenSocket = -1;
+    m_PollFds = 0;
+    for(int i = 0; i < 1 + MAX_CLIENTS; i++)
+        m_aPollFds[i].fd = -1;
 
-	m_PollFds = 0;
-	for(int i = 1; i < 1 + MAX_CLIENTS; i++)
-		m_aPollFds[i].fd = -1;
+    for(int i = 0; i < MAX_CLIENTS; i++)
+    {
+        m_aClients[i].m_Socket = -1;
+        m_aClients[i].m_New = true;
+    }
 
-	for(int i = 0; i < MAX_CLIENTS; i++)
-		m_aClients[i].m_Socket = -1;
-
-	m_AvailableTime = 0.0;
-
-	m_pMode = NULL;
-	m_pCodec = NULL;
-
-	m_VoiceDetour = NULL;
+    m_AvailableTime = 0.0;
+    m_pMode = NULL;
+    m_pCodec = NULL;
+    m_VoiceDetour = NULL;
 }
 
 class SpeakingEndTimer : public ITimedEvent
 {
 public:
-	ResultType OnTimer(ITimer *pTimer, void *pData)
-	{
-		int client = (int)(intptr_t)pData;
-		if ((gpGlobals->curtime - g_fLastVoiceData[client]) > 0.1)
-		{
-			if (g_SvLogging->GetInt())
-				g_pSM->LogMessage(myself, "Player Speaking End (client=%d)", client);
-
-			return Pl_Stop;
-		}
-		return Pl_Continue;
-	}
-	void OnTimerEnd(ITimer *pTimer, void *pData)
-	{
-		g_pTimerSpeaking[(int)(intptr_t)pData] = NULL;
-	}
+    ResultType OnTimer(ITimer *pTimer, void *pData)
+    {
+        int client = (int)(intptr_t)pData;
+        if ((gpGlobals->curtime - g_fLastVoiceData[client]) > 0.1)
+        {
+            if (g_SvLogging->GetInt())
+                g_pSM->LogMessage(myself, "Player Speaking End (client=%d)", client);
+            return Pl_Stop;
+        }
+        return Pl_Continue;
+    }
+    void OnTimerEnd(ITimer *pTimer, void *pData)
+    {
+        g_pTimerSpeaking[(int)(intptr_t)pData] = NULL;
+    }
 } s_SpeakingEndTimer;
 
 bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 {
-	char conf_error[255] = "";
-	if(!gameconfs->LoadGameConfigFile("voice.games", &g_pGameConf, conf_error, sizeof(conf_error)))
-	{
-		if(conf_error[0])
-		{
-			snprintf(error, maxlength, "Could not read voice.games.txt: %s\n", conf_error);
-		}
-		return false;
-	}
+    char conf_error[255] = "";
+    if(!gameconfs->LoadGameConfigFile("voice.games", &g_pGameConf, conf_error, sizeof(conf_error)))
+    {
+        if(conf_error[0])
+        {
+            snprintf(error, maxlength, "Could not read voice.games.txt: %s\n", conf_error);
+        }
+        return false;
+    }
 
-	// Setup voice detour.
-	CDetourManager::Init(g_pSM->GetScriptingEngine(), g_pGameConf);
+    // Setup voice detour.
+    CDetourManager::Init(g_pSM->GetScriptingEngine(), g_pGameConf);
 
 #if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
-	#ifdef _WIN32
-		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData_LTCG, "SV_BroadcastVoiceData");
-	#else
-		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData_CSGO, "SV_BroadcastVoiceData");
-	#endif
+    #ifdef _WIN32
+        m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData_LTCG, "SV_BroadcastVoiceData");
+    #else
+        m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData_CSGO, "SV_BroadcastVoiceData");
+    #endif
 #else
-	#ifdef _WIN32
-		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData, "SV_BroadcastVoiceData");
-	#else
-		m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData, "SV_BroadcastVoiceData");
-	#endif
+    #ifdef _WIN32
+        m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData_LTCG, "SV_BroadcastVoiceData");
+    #else
+        m_VoiceDetour = DETOUR_CREATE_STATIC(SV_BroadcastVoiceData, "SV_BroadcastVoiceData");
+    #endif
 #endif
 
-	if (!m_VoiceDetour)
-	{
-		g_SMAPI->Format(error, maxlength, "SV_BroadcastVoiceData detour failed.");
-		return false;
-	}
+    if (!m_VoiceDetour)
+    {
+        g_SMAPI->Format(error, maxlength, "SV_BroadcastVoiceData detour failed.");
+        return false;
+    }
 
-	m_VoiceDetour->EnableDetour();
+    m_VoiceDetour->EnableDetour();
 
-	AutoExecConfig(g_pCVar, true);
+    AutoExecConfig(g_pCVar, true);
 
-	if (g_SvLogging->GetInt())
-	{
-		g_pSM->LogMessage(myself, "== Voice Encoder Settings ==");
-		g_pSM->LogMessage(myself, "SampleRateHertzKbps: %d", g_SvSampleRateHz->GetInt());
-		g_pSM->LogMessage(myself, "BitRate: %d", g_SvBitRateKbps->GetInt());
-		g_pSM->LogMessage(myself, "frameSize: %d", g_SvFrameSize->GetInt());
-		g_pSM->LogMessage(myself, "packetSize: %d", g_SvPacketSize->GetInt());
-		g_pSM->LogMessage(myself, "complexity: %d", g_SvComplexity->GetInt());
-	}
+    if (g_SvLogging->GetInt())
+    {
+        g_pSM->LogMessage(myself, "== Voice Encoder Settings ==");
+        g_pSM->LogMessage(myself, "SampleRateHertzKbps: %d", g_SvSampleRateHz->GetInt());
+        g_pSM->LogMessage(myself, "BitRate: %d", g_SvBitRateKbps->GetInt());
+        g_pSM->LogMessage(myself, "frameSize: %d", g_SvFrameSize->GetInt());
+        g_pSM->LogMessage(myself, "packetSize: %d", g_SvPacketSize->GetInt());
+        g_pSM->LogMessage(myself, "complexity: %d", g_SvComplexity->GetInt());
+    }
 
-	// Encoder settings
-	m_EncoderSettings.sampleRateHz = g_SvSampleRateHz->GetInt();
-	m_EncoderSettings.targetBitRateKBPS = g_SvBitRateKbps->GetInt();
-	m_EncoderSettings.frameSize = g_SvFrameSize->GetInt(); // samples
-	m_EncoderSettings.packetSize = g_SvPacketSize->GetInt();
-	m_EncoderSettings.complexity = g_SvComplexity->GetInt(); // 0 - 10
-	m_EncoderSettings.frameTime = (double)m_EncoderSettings.frameSize / (double)m_EncoderSettings.sampleRateHz;
+    // Encoder settings
+    m_EncoderSettings.sampleRateHz = g_SvSampleRateHz->GetInt();
+    m_EncoderSettings.targetBitRateKBPS = g_SvBitRateKbps->GetInt();
+    m_EncoderSettings.frameSize = g_SvFrameSize->GetInt(); // samples
+    m_EncoderSettings.packetSize = g_SvPacketSize->GetInt();
+    m_EncoderSettings.complexity = g_SvComplexity->GetInt(); // 0 - 10
+    m_EncoderSettings.frameTime = (double)m_EncoderSettings.frameSize / (double)m_EncoderSettings.sampleRateHz;
 
-	// Init CELT encoder
-	int theError;
-	m_pMode = celt_mode_create(m_EncoderSettings.sampleRateHz, m_EncoderSettings.frameSize, &theError);
-	if(!m_pMode)
-	{
-		g_SMAPI->Format(error, maxlength, "celt_mode_create error: %d", theError);
-		SDK_OnUnload();
-		return false;
-	}
+    // Init CELT encoder
+    int theError;
+    m_pMode = celt_mode_create(m_EncoderSettings.sampleRateHz, m_EncoderSettings.frameSize, &theError);
+    if(!m_pMode)
+    {
+        g_SMAPI->Format(error, maxlength, "celt_mode_create error: %d", theError);
+        SDK_OnUnload();
+        return false;
+    }
 
-	m_pCodec = celt_encoder_create_custom(m_pMode, 1, &theError);
-	if(!m_pCodec)
-	{
-		g_SMAPI->Format(error, maxlength, "celt_encoder_create_custom error: %d", theError);
-		SDK_OnUnload();
-		return false;
-	}
+    m_pCodec = celt_encoder_create_custom(m_pMode, 1, &theError);
+    if(!m_pCodec)
+    {
+        g_SMAPI->Format(error, maxlength, "celt_encoder_create_custom error: %d", theError);
+        SDK_OnUnload();
+        return false;
+    }
 
-	celt_encoder_ctl(m_pCodec, CELT_RESET_STATE_REQUEST, NULL);
-	celt_encoder_ctl(m_pCodec, CELT_SET_BITRATE(m_EncoderSettings.targetBitRateKBPS * 1000));
-	celt_encoder_ctl(m_pCodec, CELT_SET_COMPLEXITY(m_EncoderSettings.complexity));
+    celt_encoder_ctl(m_pCodec, CELT_RESET_STATE_REQUEST, NULL);
+    celt_encoder_ctl(m_pCodec, CELT_SET_BITRATE(m_EncoderSettings.targetBitRateKBPS * 1000));
+    celt_encoder_ctl(m_pCodec, CELT_SET_COMPLEXITY(m_EncoderSettings.complexity));
 
-	return true;
+    return true;
 }
 
 bool CVoice::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool late)
 {
-	GET_V_IFACE_CURRENT(GetEngineFactory, g_pCVar, ICvar, CVAR_INTERFACE_VERSION);
-	GET_V_IFACE_CURRENT(GetServerFactory, hltvdirector, IHLTVDirector, INTERFACEVERSION_HLTVDIRECTOR);
-	gpGlobals = ismm->GetCGlobals();
-	ConVar_Register(0, this);
+    GET_V_IFACE_CURRENT(GetEngineFactory, g_pCVar, ICvar, CVAR_INTERFACE_VERSION);
+    GET_V_IFACE_CURRENT(GetServerFactory, hltvdirector, IHLTVDirector, INTERFACEVERSION_HLTVDIRECTOR);
+    gpGlobals = ismm->GetCGlobals();
+    ConVar_Register(0, this);
 
-	return true;
+    return true;
 }
 
 bool CVoice::RegisterConCommandBase(ConCommandBase *pVar)
 {
-	/* Always call META_REGCVAR instead of going through the engine. */
-	return META_REGCVAR(pVar);
+    return META_REGCVAR(pVar);
 }
 
 cell_t IsClientTalking(IPluginContext *pContext, const cell_t *params)
 {
-	int client = params[1];
+    int client = params[1];
 
-	if(client < 1 || client > SM_MAXPLAYERS)
-	{
-		return pContext->ThrowNativeError("Client index %d is invalid", client);
-	}
+    if(client < 1 || client > SM_MAXPLAYERS)
+    {
+        return pContext->ThrowNativeError("Client index %d is invalid", client);
+    }
 
-	double d = gpGlobals->curtime - g_fLastVoiceData[client];
+    double d = gpGlobals->curtime - g_fLastVoiceData[client];
 
-	if(d < 0) // mapchange
-		return false;
+    if(d < 0) // mapchange
+        return false;
 
-	if(d > 0.33)
-		return false;
+    if(d > 0.33)
+        return false;
 
-	return true;
+    return true;
 }
 
 const sp_nativeinfo_t MyNatives[] =
 {
-	{ "IsClientTalking", IsClientTalking },
-	{ NULL, NULL }
+    { "IsClientTalking", IsClientTalking },
+    { NULL, NULL }
 };
 
 static void ListenSocketAction(void *pData)
 {
-	CVoice *pThis = (CVoice *)pData;
-	pThis->ListenSocket();
+    CVoice *pThis = (CVoice *)pData;
+    pThis->ListenSocket();
 }
 
 void CVoice::SDK_OnAllLoaded()
 {
-	sharesys->AddNatives(myself, MyNatives);
-	sharesys->RegisterLibrary(myself, "Voice");
+    sharesys->AddNatives(myself, MyNatives);
+    sharesys->RegisterLibrary(myself, "Voice");
 
-	SM_GET_LATE_IFACE(SDKTOOLS, g_pSDKTools);
-	if(g_pSDKTools == NULL)
-	{
-		smutils->LogError(myself, "SDKTools interface not found");
-		SDK_OnUnload();
-		return;
-	}
+    SM_GET_LATE_IFACE(SDKTOOLS, g_pSDKTools);
+    if(g_pSDKTools == NULL)
+    {
+        smutils->LogError(myself, "SDKTools interface not found");
+        SDK_OnUnload();
+        return;
+    }
 
-	iserver = g_pSDKTools->GetIServer();
-	if(iserver == NULL)
-	{
-		smutils->LogError(myself, "Failed to get IServer interface from SDKTools!");
-		SDK_OnUnload();
-		return;
-	}
+    iserver = g_pSDKTools->GetIServer();
+    if(iserver == NULL)
+    {
+        smutils->LogError(myself, "Failed to get IServer interface from SDKTools!");
+        SDK_OnUnload();
+        return;
+    }
 
-	// Init tcp server
-	m_ListenSocket = socket(AF_INET, SOCK_STREAM, 0);
-	if(m_ListenSocket < 0)
-	{
-		smutils->LogError(myself, "Failed creating socket.");
-		SDK_OnUnload();
-		return;
-	}
+    // Init tcp server
+    m_ListenSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if(m_ListenSocket < 0)
+    {
+        smutils->LogError(myself, "Failed creating socket.");
+        SDK_OnUnload();
+        return;
+    }
 
-	int yes = 1;
-	if(setsockopt(m_ListenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes)) < 0)
-	{
-		smutils->LogError(myself, "Failed setting SO_REUSEADDR on socket.");
-		SDK_OnUnload();
-		return;
-	}
+    int yes = 1;
+    if(setsockopt(m_ListenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes)) < 0)
+    {
+        smutils->LogError(myself, "Failed setting SO_REUSEADDR on socket.");
+        SDK_OnUnload();
+        return;
+    }
 
-	// ... delay starting listen server to next frame
-	smutils->AddFrameAction(ListenSocketAction, this);
+    #ifdef _WIN32
+        unsigned long nonblock = 1;
+        ioctlsocket(m_ListenSocket, FIONBIO, &nonblock);
+    #else
+        int flags = fcntl(m_ListenSocket, F_GETFL, 0);
+        fcntl(m_ListenSocket, F_SETFL, flags | O_NONBLOCK);
+    #endif
+
+    smutils->AddFrameAction(ListenSocketAction, this);
 }
-
 
 bool convert_ip(const char *ip, struct in_addr *addr)
 {
@@ -485,7 +474,7 @@ bool convert_ip(const char *ip, struct in_addr *addr)
 #endif
 }
 
-void close_socket(int sock)
+void close_socket(socket_t sock)
 {
 #ifdef _WIN32
     closesocket(sock);
@@ -497,501 +486,510 @@ void close_socket(int sock)
 int my_poll(struct pollfd *fds, int nfds, int timeout)
 {
 #ifdef _WIN32
-	// Define nfds_t on Windows if needed
-	typedef int nfds_t;
-	return WSAPoll(fds, nfds, timeout);
+    typedef int nfds_t;
+    return WSAPoll(fds, nfds, timeout);
 #else
-	return poll(fds, nfds, timeout);
+    return poll(fds, nfds, timeout);
 #endif
 }
 
 int my_ioctl(socket_t sockfd, long cmd, size_t *argp)
 {
 #ifdef _WIN32
-    return ioctlsocket(sockfd, cmd, reinterpret_cast<u_long*>(argp)); // Windows version
+    return ioctlsocket(sockfd, cmd, reinterpret_cast<u_long*>(argp));
 #else
-    return ioctl(sockfd, cmd, argp);        // Linux/macOS version
+    return ioctl(sockfd, cmd, argp);
 #endif
 }
 
 void CVoice::ListenSocket()
 {
-	if(m_PollFds > 0)
-		return;
+    if(m_PollFds > 0)
+        return;
 
-	sockaddr_in bindAddr;
-	memset(&bindAddr, 0, sizeof(bindAddr));
-	bindAddr.sin_family = AF_INET;
-	if (!convert_ip(g_SmVoiceAddr->GetString(), &bindAddr.sin_addr))
-	{
-		smutils->LogError(myself, "Failed to convert ip.");
-		SDK_OnUnload();
-		return;
-	}
-	bindAddr.sin_port = htons(g_SmVoicePort->GetInt());
+    sockaddr_in bindAddr;
+    memset(&bindAddr, 0, sizeof(bindAddr));
+    bindAddr.sin_family = AF_INET;
+    if (!convert_ip(g_SmVoiceAddr->GetString(), &bindAddr.sin_addr))
+    {
+        smutils->LogError(myself, "Failed to convert ip.");
+        SDK_OnUnload();
+        return;
+    }
+    bindAddr.sin_port = htons(g_SmVoicePort->GetInt());
 
-	smutils->LogMessage(myself, "Binding to %s:%d!\n", g_SmVoiceAddr->GetString(), g_SmVoicePort->GetInt());
+    smutils->LogMessage(myself, "Binding to %s:%d!", g_SmVoiceAddr->GetString(), g_SmVoicePort->GetInt());
 
-	if(bind(m_ListenSocket, (sockaddr *)&bindAddr, sizeof(sockaddr_in)) < 0)
-	{
-		smutils->LogError(myself, "Failed binding to socket (%d '%s').", errno, strerror(errno));
-		SDK_OnUnload();
-		return;
-	}
+    if(bind(m_ListenSocket, (sockaddr *)&bindAddr, sizeof(sockaddr_in)) < 0)
+    {
+        smutils->LogError(myself, "Failed binding to socket (%d '%s').", errno, strerror(errno));
+        SDK_OnUnload();
+        return;
+    }
 
-	if(listen(m_ListenSocket, MAX_CLIENTS) < 0)
-	{
-		smutils->LogError(myself, "Failed listening on socket.");
-		SDK_OnUnload();
-		return;
-	}
+    if(listen(m_ListenSocket, MAX_CLIENTS) < 0)
+    {
+        smutils->LogError(myself, "Failed listening on socket.");
+        SDK_OnUnload();
+        return;
+    }
 
-	m_aPollFds[0].fd = m_ListenSocket;
-	m_aPollFds[0].events = POLLIN;
-	m_PollFds++;
+    m_aPollFds[0].fd = m_ListenSocket;
+    m_aPollFds[0].events = POLLIN;
+    m_PollFds++;
 
-	smutils->AddGameFrameHook(::OnGameFrame);
+    smutils->AddGameFrameHook(::OnGameFrame);
 }
 
 void CVoice::SDK_OnUnload()
 {
-	smutils->RemoveGameFrameHook(::OnGameFrame);
+    smutils->RemoveGameFrameHook(::OnGameFrame);
 
-	if (m_VoiceDetour)
-	{
-		m_VoiceDetour->Destroy();
-		m_VoiceDetour = NULL;
-	}
+    if (m_VoiceDetour)
+    {
+        m_VoiceDetour->Destroy();
+        m_VoiceDetour = NULL;
+    }
 
-	if(m_ListenSocket != -1)
-	{
-		close_socket(m_ListenSocket);
-		m_ListenSocket = -1;
-	}
+    if(m_ListenSocket != -1)
+    {
+        close_socket(m_ListenSocket);
+        m_ListenSocket = -1;
+    }
 
-	for (int Client = 0; Client < MAX_CLIENTS; Client++)
-	{
-		if(m_aClients[Client].m_Socket != -1)
-		{
-			close_socket(m_aClients[Client].m_Socket);
-			m_aClients[Client].m_Socket = -1;
-		}
-	}
+    for (int Client = 0; Client < MAX_CLIENTS; Client++)
+    {
+        if(m_aClients[Client].m_Socket != -1)
+        {
+            close_socket(m_aClients[Client].m_Socket);
+            m_aClients[Client].m_Socket = -1;
+        }
+    }
 
-	if (m_pCodec)
-	{
-		celt_encoder_destroy(m_pCodec);
-		m_pCodec = NULL;
-	}
+    if (m_pCodec)
+    {
+        celt_encoder_destroy(m_pCodec);
+        m_pCodec = NULL;
+    }
 
-	if (m_pMode)
-	{
-		celt_mode_destroy(m_pMode);
-		m_pMode = NULL;
-	}
+    if (m_pMode)
+    {
+        celt_mode_destroy(m_pMode);
+        m_pMode = NULL;
+    }
 }
 
 void CVoice::OnGameFrame(bool simulating)
 {
-	HandleNetwork();
-	HandleVoiceData();
+    HandleNetwork();
+    HandleVoiceData();
 
-	// Reset per-client voice byte counter to 0 every frame.
-	memset(g_aFrameVoiceBytes, 0, sizeof(g_aFrameVoiceBytes));
+    // Reset per-client voice byte counter to 0 every frame.
+    memset(g_aFrameVoiceBytes, 0, sizeof(g_aFrameVoiceBytes));
 }
 
 bool CVoice::OnBroadcastVoiceData(IClient *pClient, size_t nBytes, char *data)
 {
-	// Reject empty packets
-	if(nBytes < 1)
-		return false;
+    if (!pClient || nBytes < 1)
+        return false;
 
-	int client = pClient->GetPlayerSlot() + 1;
+    int client = pClient->GetPlayerSlot() + 1;
+    
+    if (client < 1 || client > SM_MAXPLAYERS)
+        return false;
 
-	// Reject voice packet if we'd send more than NET_MAX_VOICE_BYTES_FRAME voice bytes from this client in the current frame.
-	// 5 = SVC_VoiceData header/overhead
-	size_t voice_data_header = 5;
-	g_aFrameVoiceBytes[client] += voice_data_header + nBytes;
+    size_t voice_data_header = 5;
+    g_aFrameVoiceBytes[client] += voice_data_header + nBytes;
 
-#if SOURCE_ENGINE != SE_CSGO && SOURCE_ENGINE == SE_INSURGENCY
-	if (g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME)
-		return false;
-#endif
+    #if SOURCE_ENGINE != SE_CSGO && SOURCE_ENGINE != SE_INSURGENCY
+    if (g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME)
+        return false;
+    #endif
 
-	g_fLastVoiceData[client] = gpGlobals->curtime;
+    g_fLastVoiceData[client] = gpGlobals->curtime;
 
-	if (g_pTimerSpeaking[client] == NULL)
-	{
-		g_pTimerSpeaking[client] = timersys->CreateTimer(&s_SpeakingEndTimer, 0.3f, (void *)(intptr_t)client, 1);
+    if (g_pTimerSpeaking[client] == NULL)
+    {
+        g_pTimerSpeaking[client] = timersys->CreateTimer(&s_SpeakingEndTimer, 0.3f, (void *)(intptr_t)client, 1);
 
-		if (g_SvLogging->GetInt())
-			g_pSM->LogMessage(myself, "Player Speaking Start (client=%d)", client);
-	}
+        if (g_SvLogging->GetInt())
+            g_pSM->LogMessage(myself, "Player Speaking Start (client=%d)", client);
+    }
 
-	return true;
+    return true;
 }
 
 void CVoice::HandleNetwork()
 {
-	if(m_ListenSocket == -1)
-		return;
+    if(m_ListenSocket == -1 || m_PollFds == 0)
+        return;
 
-	int PollRes = my_poll(m_aPollFds, m_PollFds, 0);
-	if(PollRes <= 0)
-		return;
+    int PollRes = my_poll(m_aPollFds, m_PollFds, 0);
+    if(PollRes <= 0)
+        return;
 
-	// Accept new clients
-	if(m_aPollFds[0].revents & POLLIN)
-	{
-		// Find slot
-		int Client;
-		for(Client = 0; Client < MAX_CLIENTS; Client++)
-		{
-			if(m_aClients[Client].m_Socket == -1)
-				break;
-		}
+    // Accept new clients
+    if(m_aPollFds[0].revents & POLLIN)
+    {
+        // Find slot
+        int Client;
+        for(Client = 0; Client < MAX_CLIENTS; Client++)
+        {
+            if(m_aClients[Client].m_Socket == -1)
+                break;
+        }
 
-		// no free slot
-		if(Client != MAX_CLIENTS)
-		{
-			sockaddr_in addr;
-			socklen_t size = sizeof(sockaddr_in);
-			int Socket = accept(m_ListenSocket, (sockaddr *)&addr, &size);
+        // Found free slot
+        if(Client < MAX_CLIENTS)
+        {
+            sockaddr_in addr;
+            socklen_t size = sizeof(sockaddr_in);
+            socket_t Socket = accept(m_ListenSocket, (sockaddr *)&addr, &size);
 
-			m_aClients[Client].m_Socket = Socket;
-			m_aClients[Client].m_BufferWriteIndex = 0;
-			m_aClients[Client].m_LastLength = 0;
-			m_aClients[Client].m_LastValidData = 0.0;
-			m_aClients[Client].m_New = true;
-			m_aClients[Client].m_UnEven = false;
+            if (Socket != -1)
+            {
+                #ifdef _WIN32
+                    unsigned long nonblock = 1;
+                    ioctlsocket(Socket, FIONBIO, &nonblock);
+                #else
+                    int flags = fcntl(Socket, F_GETFL, 0);
+                    fcntl(Socket, F_SETFL, flags | O_NONBLOCK);
+                #endif
 
-			m_aPollFds[m_PollFds].fd = Socket;
-			m_aPollFds[m_PollFds].events = POLLIN | POLLHUP;
-			m_aPollFds[m_PollFds].revents = 0;
-			m_PollFds++;
+                m_aClients[Client].m_Socket = Socket;
+                m_aClients[Client].m_BufferWriteIndex = 0;
+                m_aClients[Client].m_LastLength = 0;
+                m_aClients[Client].m_LastValidData = 0.0;
+                m_aClients[Client].m_New = true;
+                m_aClients[Client].m_UnEven = false;
 
-			if (g_SvLogging->GetInt())
-				smutils->LogMessage(myself, "Client %d connected!\n", Client);
-		}
-	}
+                m_aPollFds[m_PollFds].fd = Socket;
+                m_aPollFds[m_PollFds].events = POLLIN | POLLHUP;
+                m_aPollFds[m_PollFds].revents = 0;
+                m_PollFds++;
 
-	bool CompressPollFds = false;
-	for(int PollFds = 1; PollFds < m_PollFds; PollFds++)
-	{
-		int Client = -1;
-		for(Client = 0; Client < MAX_CLIENTS; Client++)
-		{
-			if(m_aClients[Client].m_Socket == m_aPollFds[PollFds].fd)
-				break;
-		}
-		if(Client == -1)
-			continue;
+                if (g_SvLogging->GetInt())
+                    smutils->LogMessage(myself, "Client %d connected!", Client);
+            }
+        }
+    }
 
-		CClient *pClient = &m_aClients[Client];
+    bool CompressPollFds = false;
+    for(int PollFds = 1; PollFds < m_PollFds; PollFds++)
+    {
+        if (m_aPollFds[PollFds].fd == -1)
+            continue;
 
-		// Connection shutdown prematurely ^C
-		// Make sure to set SO_LINGER l_onoff = 1, l_linger = 0
-		if(m_aPollFds[PollFds].revents & POLLHUP)
-		{
-			if (pClient->m_Socket != -1)
-				close_socket(pClient->m_Socket);
+        int Client = -1;
+        for(Client = 0; Client < MAX_CLIENTS; Client++)
+        {
+            if(m_aClients[Client].m_Socket == m_aPollFds[PollFds].fd)
+                break;
+        }
+        if(Client == -1 || Client >= MAX_CLIENTS)
+            continue;
 
-			pClient->m_Socket = -1;
-			m_aPollFds[PollFds].fd = -1;
-			CompressPollFds = true;
-			if (g_SvLogging->GetInt())
-				smutils->LogMessage(myself, "Client %d disconnected!(2)\n", Client);
-			continue;
-		}
+        CClient *pClient = &m_aClients[Client];
 
-		// Data available?
-		if(!(m_aPollFds[PollFds].revents & POLLIN))
-			continue;
+        // Connection shutdown
+        if(m_aPollFds[PollFds].revents & (POLLHUP | POLLERR))
+        {
+            if (pClient->m_Socket != -1)
+                close_socket(pClient->m_Socket);
 
-		size_t BytesAvailable;
-		if(my_ioctl(pClient->m_Socket, FIONREAD, &BytesAvailable) == -1)
-			continue;
+            pClient->m_Socket = -1;
+            m_aPollFds[PollFds].fd = -1;
+            CompressPollFds = true;
+            if (g_SvLogging->GetInt())
+                smutils->LogMessage(myself, "Client %d disconnected!", Client);
+            continue;
+        }
 
-		if(pClient->m_New)
-		{
-			pClient->m_BufferWriteIndex = m_Buffer.GetReadIndex();
-			pClient->m_New = false;
-		}
+        // Data available?
+        if(!(m_aPollFds[PollFds].revents & POLLIN))
+            continue;
 
-		m_Buffer.SetWriteIndex(pClient->m_BufferWriteIndex);
+        size_t BytesAvailable;
+        if(my_ioctl(pClient->m_Socket, FIONREAD, &BytesAvailable) == -1)
+            continue;
 
-		// Don't recv() when we can't fit data into the ringbuffer
-		char aBuf[32768];
-		if(min_ext(BytesAvailable, sizeof(aBuf)) > m_Buffer.CurrentFree() * sizeof(int16_t))
-			continue;
+        if(pClient->m_New)
+        {
+            pClient->m_BufferWriteIndex = m_Buffer.GetReadIndex();
+            pClient->m_New = false;
+        }
 
-		// Edge case: previously received data is uneven and last recv'd byte has to be prepended
-		int Shift = 0;
-		if(pClient->m_UnEven)
-		{
-			Shift = 1;
-			aBuf[0] = pClient->m_Remainder;
-			pClient->m_UnEven = false;
-		}
+        m_Buffer.SetWriteIndex(pClient->m_BufferWriteIndex);
 
-		ssize_t Bytes = recv(pClient->m_Socket, &aBuf[Shift], sizeof(aBuf) - Shift, 0);
+        char aBuf[32768];
+        size_t max_recv = min_ext(BytesAvailable, sizeof(aBuf));
+        
+        // Don't recv() when we can't fit data into the ringbuffer
+        if(max_recv > m_Buffer.CurrentFree() * sizeof(int16_t))
+            continue;
 
-		if(Bytes <= 0)
-		{
-			if (pClient->m_Socket != -1)
-				close_socket(pClient->m_Socket);
+        // Edge case: previously received data is uneven
+        int Shift = 0;
+        if(pClient->m_UnEven)
+        {
+            Shift = 1;
+            aBuf[0] = pClient->m_Remainder;
+            pClient->m_UnEven = false;
+        }
 
-			pClient->m_Socket = -1;
-			m_aPollFds[PollFds].fd = -1;
-			CompressPollFds = true;
-			if (g_SvLogging->GetInt())
-				smutils->LogMessage(myself, "Client %d disconnected!(1)\n", Client);
-			continue;
-		}
+        ssize_t Bytes = recv(pClient->m_Socket, &aBuf[Shift], max_recv - Shift, 0);
 
-		Bytes += Shift;
+        if(Bytes <= 0)
+        {
+            if (pClient->m_Socket != -1)
+                close_socket(pClient->m_Socket);
 
-		// Edge case: data received is uneven (can't be divided by two)
-		// store last byte, drop it here and prepend it right before the next recv
-		if(Bytes & 1)
-		{
-			pClient->m_UnEven = true;
-			pClient->m_Remainder = aBuf[Bytes - 1];
-			Bytes -= 1;
-		}
+            pClient->m_Socket = -1;
+            m_aPollFds[PollFds].fd = -1;
+            CompressPollFds = true;
+            if (g_SvLogging->GetInt())
+                smutils->LogMessage(myself, "Client %d disconnected!", Client);
+            continue;
+        }
 
-		// Got data!
-		OnDataReceived(pClient, (int16_t *)aBuf, Bytes / sizeof(int16_t));
+        Bytes += Shift;
 
-		pClient->m_LastLength = m_Buffer.CurrentLength();
-		pClient->m_BufferWriteIndex = m_Buffer.GetWriteIndex();
-	}
+        // Edge case: data received is uneven
+        if(Bytes & 1)
+        {
+            pClient->m_UnEven = true;
+            pClient->m_Remainder = aBuf[Bytes - 1];
+            Bytes -= 1;
+        }
 
-	if(CompressPollFds)
-	{
-		for(int PollFds = 1; PollFds < m_PollFds; PollFds++)
-		{
-			if(m_aPollFds[PollFds].fd != -1)
-				continue;
+        // Got data!
+        OnDataReceived(pClient, (int16_t *)aBuf, Bytes / sizeof(int16_t));
 
-			for(int PollFds_ = PollFds; PollFds_ < 1 + MAX_CLIENTS; PollFds_++)
-				m_aPollFds[PollFds_].fd = m_aPollFds[PollFds_ + 1].fd;
+        pClient->m_LastLength = m_Buffer.CurrentLength();
+        pClient->m_BufferWriteIndex = m_Buffer.GetWriteIndex();
+    }
 
-			PollFds--;
-			m_PollFds--;
-		}
-	}
+    if(CompressPollFds)
+    {
+        int write_idx = 1;
+        for(int read_idx = 1; read_idx < m_PollFds; read_idx++)
+        {
+            if(m_aPollFds[read_idx].fd != -1)
+            {
+                if (write_idx != read_idx)
+                {
+                    m_aPollFds[write_idx] = m_aPollFds[read_idx];
+                }
+                write_idx++;
+            }
+        }
+        m_PollFds = write_idx;
+    }
 }
 
 void CVoice::OnDataReceived(CClient *pClient, int16_t *pData, size_t Samples)
 {
-	// Check for empty input
-	ssize_t DataStartsAt = -1;
-	for(size_t i = 0; i < Samples; i++)
-	{
-		if(pData[i] == 0)
-			continue;
+    if (Samples == 0)
+        return;
 
-		DataStartsAt = i;
-		break;
-	}
+    // Check for empty input
+    ssize_t DataStartsAt = -1;
+    for(size_t i = 0; i < Samples; i++)
+    {
+        if(pData[i] == 0)
+            continue;
 
-	// Discard empty data if last vaild data was more than a second ago.
-	if(pClient->m_LastValidData + 1.0 < getTime())
-	{
-		// All empty
-		if(DataStartsAt == -1)
-			return;
+        DataStartsAt = i;
+        break;
+    }
 
-		// Data starts here
-		pData += DataStartsAt;
-		Samples -= DataStartsAt;
-	}
+    // Discard empty data if last valid data was more than a second ago.
+    if(pClient->m_LastValidData + 1.0 < getTime())
+    {
+        // All empty
+        if(DataStartsAt == -1)
+            return;
 
-	if(!m_Buffer.Push(pData, Samples))
-	{
-		smutils->LogError(myself, "Buffer push failed!!! Samples: %u, Free: %u\n", Samples, m_Buffer.CurrentFree());
-		return;
-	}
+        // Data starts here
+        pData += DataStartsAt;
+        Samples -= DataStartsAt;
+    }
 
-	pClient->m_LastValidData = getTime();
+    if(!m_Buffer.Push(pData, Samples))
+    {
+        smutils->LogError(myself, "Buffer push failed! Samples: %zu, Free: %zu", Samples, m_Buffer.CurrentFree());
+        return;
+    }
+
+    pClient->m_LastValidData = getTime();
 }
 
 void CVoice::HandleVoiceData()
 {
-	int SamplesPerFrame = m_EncoderSettings.frameSize;
-	int packetSize = m_EncoderSettings.packetSize;
-	size_t FramesAvailable = m_Buffer.TotalLength() / SamplesPerFrame;
-	float TimeAvailable = (float)m_Buffer.TotalLength() / (float)m_EncoderSettings.sampleRateHz;
+    int SamplesPerFrame = m_EncoderSettings.frameSize;
+    int packetSize = m_EncoderSettings.packetSize;
+    size_t FramesAvailable = m_Buffer.TotalLength() / SamplesPerFrame;
+    float TimeAvailable = (float)m_Buffer.TotalLength() / (float)m_EncoderSettings.sampleRateHz;
 
-	if(!FramesAvailable)
-		return;
+    if(!FramesAvailable)
+        return;
 
-	// Before starting playback we want at least 100ms in the buffer
-	if(m_AvailableTime < getTime() && TimeAvailable < 0.1)
-		return;
+    // Before starting playback we want at least 100ms in the buffer
+    if(m_AvailableTime < getTime() && TimeAvailable < 0.1)
+        return;
 
-	// let the clients have no more than 500ms
-	if(m_AvailableTime > getTime() + 0.5)
-		return;
+    // let the clients have no more than 500ms
+    if(m_AvailableTime > getTime() + 0.5)
+        return;
 
-	// 5 = max frames per packet
-  size_t max_frames = 5;
-	FramesAvailable = min_ext(FramesAvailable, max_frames);
+    // max frames per packet
+    size_t max_frames = 5;
+    FramesAvailable = min_ext(FramesAvailable, max_frames);
 
-	// Get SourceTV Index
-	if (!hltv)
-	{
-#if SOURCE_ENGINE >= SE_CSGO
-		hltv = hltvdirector->GetHLTVServer(0);
-#else
-		hltv = hltvdirector->GetHLTVServer();
-#endif
-	}
+    // Get SourceTV Index
+    if (!hltv)
+    {
+        #if SOURCE_ENGINE >= SE_CSGO
+            hltv = hltvdirector->GetHLTVServer(0);
+        #else
+            hltv = hltvdirector->GetHLTVServer();
+        #endif
+    }
 
-	int iSourceTVIndex = 0;
-	if (hltv)
-		iSourceTVIndex = hltv->GetHLTVSlot();
+    int iSourceTVIndex = 0;
+    if (hltv)
+        iSourceTVIndex = hltv->GetHLTVSlot();
 
-	IClient *pClient = iserver->GetClient(iSourceTVIndex);
-	if(!pClient)
-	{
-		smutils->LogError(myself, "Couldnt get client with id %d (SourceTV)\n", iSourceTVIndex);
-		return;
-	}
+    IClient *pClient = iserver->GetClient(iSourceTVIndex);
+    if(!pClient)
+    {
+        smutils->LogError(myself, "Couldnt get client with id %d (SourceTV)", iSourceTVIndex);
+        return;
+    }
 
-	for(size_t Frame = 0; Frame < FramesAvailable; Frame++)
-	{
-		// Get data into buffer from ringbuffer.
-		int16_t *aBuffer = new int16_t[SamplesPerFrame];
+    for(size_t Frame = 0; Frame < FramesAvailable; Frame++)
+    {
+        int16_t *aBuffer = new int16_t[SamplesPerFrame];
 
-		size_t OldReadIdx = m_Buffer.m_ReadIndex;
-		size_t OldCurLength = m_Buffer.CurrentLength();
-		size_t OldTotalLength = m_Buffer.TotalLength();
+        if(!m_Buffer.Pop(aBuffer, SamplesPerFrame))
+        {
+            delete[] aBuffer;
+            smutils->LogError(myself, "Buffer pop failed! Samples: %d, Length: %zu", SamplesPerFrame, m_Buffer.TotalLength());
+            return;
+        }
 
-		if(!m_Buffer.Pop(aBuffer, SamplesPerFrame))
-		{
-			printf("Buffer pop failed!!! Samples: %u, Length: %zu\n", SamplesPerFrame, m_Buffer.TotalLength());
-			return;
-		}
+        // Encode it!
+        unsigned char *aFinal = new unsigned char[packetSize];
+        int FinalSize = 0;
 
-		// Encode it!
-		unsigned char *aFinal = new unsigned char[packetSize];
-		int FinalSize = 0;
+        if (m_pCodec)
+        {
+            FinalSize = celt_encode(m_pCodec, aBuffer, SamplesPerFrame, aFinal, packetSize);
 
-		if (m_pCodec)
-		{
-			FinalSize = celt_encode(m_pCodec, aBuffer, SamplesPerFrame, aFinal, packetSize);
+            if(FinalSize <= 0)
+            {
+                delete[] aBuffer;
+                delete[] aFinal;
+                smutils->LogError(myself, "CELT encode returned %d", FinalSize);
+                return;
+            }
+        }
+        else
+        {
+            delete[] aBuffer;
+            delete[] aFinal;
+            smutils->LogError(myself, "CELT codec is null");
+            return;
+        }
 
-			if(FinalSize <= 0)
-			{
-				smutils->LogError(myself, "Compress returned %d\n", FinalSize);
-				return;
-			}
-		}
-		else
-		{
-			smutils->LogError(myself, "CELT codec is null\n");
-			return;
-		}
+        // Check for buffer underruns
+        for(int Client = 0; Client < MAX_CLIENTS; Client++)
+        {
+            CClient *pClient = &m_aClients[Client];
+            if(pClient->m_Socket == -1 || pClient->m_New == true)
+                continue;
 
-		// Check for buffer underruns
-		for(int Client = 0; Client < MAX_CLIENTS; Client++)
-		{
-			CClient *pClient = &m_aClients[Client];
-			if(pClient->m_Socket == -1 || pClient->m_New == true)
-				continue;
+            m_Buffer.SetWriteIndex(pClient->m_BufferWriteIndex);
 
-			m_Buffer.SetWriteIndex(pClient->m_BufferWriteIndex);
+            if(m_Buffer.CurrentLength() > pClient->m_LastLength)
+            {
+                pClient->m_BufferWriteIndex = m_Buffer.GetReadIndex();
+                m_Buffer.SetWriteIndex(pClient->m_BufferWriteIndex);
+                pClient->m_LastLength = m_Buffer.CurrentLength();
+            }
+        }
 
-			if(m_Buffer.CurrentLength() > pClient->m_LastLength)
-			{
-				pClient->m_BufferWriteIndex = m_Buffer.GetReadIndex();
-				m_Buffer.SetWriteIndex(pClient->m_BufferWriteIndex);
-				pClient->m_LastLength = m_Buffer.CurrentLength();
-			}
-		}
+        BroadcastVoiceData(pClient, FinalSize, aFinal);
 
-		BroadcastVoiceData(pClient, FinalSize, aFinal);
+        delete[] aBuffer;
+        delete[] aFinal;
+    }
 
-		delete[] aBuffer;
-		delete[] aFinal;
-	}
+    if(m_AvailableTime < getTime())
+        m_AvailableTime = getTime();
 
-	if(m_AvailableTime < getTime())
-		m_AvailableTime = getTime();
-
-	m_AvailableTime += (double)FramesAvailable * m_EncoderSettings.frameTime;
+    m_AvailableTime += (double)FramesAvailable * m_EncoderSettings.frameTime;
 }
 
 void CVoice::BroadcastVoiceData(IClient *pClient, size_t nBytes, unsigned char *pData)
 {
-	if (!g_Interface.OnBroadcastVoiceData(pClient, nBytes, (char*)pData))
-		return;
+    if (!pClient || nBytes == 0 || !g_Interface.OnBroadcastVoiceData(pClient, nBytes, (char*)pData))
+        return;
 
-#if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
-	#ifdef _WIN32
-		__asm mov ecx, pClient;
-		__asm mov edx, nBytes;
+    #if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
+        #ifdef _WIN32
+            __asm mov ecx, pClient;
+            __asm mov edx, nBytes;
+            DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
+        #else
+            bool drop = false;
+            static ::google::protobuf::int32 sequence_bytes = 0;
 
-		DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
-	#else
-		bool drop = false; // if (!pDestClient->IsSplitScreenUser() && (!drop || !IsReplay/IsHLTV())
-		static ::google::protobuf::int32 sequence_bytes = 0;
-		static ::google::protobuf::uint32 section_number = 0;
-		static ::google::protobuf::uint32 uncompressed_sample_offset = 0;
+            int client = pClient->GetPlayerSlot() + 1;
 
-		int client = pClient->GetPlayerSlot() + 1;
+            if (g_pTimerSpeaking[client] == NULL)
+            {
+                sequence_bytes = 0;
+            }
 
-		if (g_pTimerSpeaking[client] == NULL)
-		{
-			section_number++;
-			sequence_bytes = 0;
-			uncompressed_sample_offset = 0;
-		}
+            CCLCMsg_VoiceData msg;
+            msg.set_xuid(0);
 
-		CCLCMsg_VoiceData msg;
-		msg.set_xuid(0); // steamID64 set to 0 because hltv is a BOT
+            if (strcmp(g_SvTestDataHex->GetString(), "") == 0)
+            {
+                sequence_bytes += nBytes;
+                msg.set_data((char*)pData, nBytes);
+            }
+            else
+            {
+                std::string testing = hex_to_string(g_SvTestDataHex->GetString());
+                sequence_bytes += nBytes;
+                msg.set_data(testing.c_str(), testing.size());
+            }
 
-		if (strcmp(g_SvTestDataHex->GetString(), "") == 0)
-		{
-			sequence_bytes += nBytes;
-			msg.set_data((char*)pData, nBytes);
-		}
-		else
-		{
-			::std::string testing = hex_to_string(g_SvTestDataHex->GetString());
-			sequence_bytes += nBytes;
-			msg.set_data(testing.c_str(), testing.size());
-		}
+            msg.set_format(VOICEDATA_FORMAT_ENGINE);
+            msg.set_sequence_bytes(sequence_bytes);
+            msg.set_section_number(0);
+            msg.set_uncompressed_sample_offset(0);
 
-		uncompressed_sample_offset += m_EncoderSettings.frameSize;
+            if (g_SvLogging->GetInt())
+                PrintCCLCMsg_VoiceData("BroadcastVoiceData", client, msg, drop);
 
-		msg.set_format(VOICEDATA_FORMAT_ENGINE);
-		msg.set_sequence_bytes(sequence_bytes);
+            if (g_SvCallOriginalBroadcast->GetInt())
+                DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, drop);
+        #endif
+    #else
+        #ifdef _WIN32
+            #ifndef WIN64
+            __asm mov ecx, pClient;
+            __asm mov edx, nBytes;
+            #endif
 
-		// These two values set to 0 will make it them ignored
-		msg.set_section_number(0);
-		msg.set_uncompressed_sample_offset(0);
-
-		if (g_SvLogging->GetInt())
-			PrintCCLCMsg_VoiceData("BroadcastVoiceData", client, msg, drop);
-
-		if (g_SvCallOriginalBroadcast->GetInt())
-			DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, drop);
-	#endif
-#else
-	#ifdef _WIN32
-		#ifndef WIN64
-		__asm mov ecx, pClient;
-		__asm mov edx, nBytes;
-		#endif
-
-		if (g_SvCallOriginalBroadcast->GetInt())
-			DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
-	#else
-		if (g_SvCallOriginalBroadcast->GetInt())
-			DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, (char *)pData, 0);
-	#endif
-#endif
+            if (g_SvCallOriginalBroadcast->GetInt())
+                DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
+        #else
+            if (g_SvCallOriginalBroadcast->GetInt())
+                DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, (char *)pData, 0);
+        #endif
+    #endif
 }

@@ -11,12 +11,6 @@
 				"linux"			"@_Z21SV_BroadcastVoiceDataP7IClientiPcx"
 			}
 		}
-		"Keys"
-		{
-			"Convar_Windows"	"windows_speaker_config"
-			"Convar_Linux"		"sdl_double_click_size"
-			"Convar_Mac"		"gl_can_mix_shader_gammas"
-		}
 	}
 	"insurgency"
 	{
@@ -28,12 +22,6 @@
 				"windows"		"\x55\x8B\xEC\x83\xEC\x74\x68\x2A\x2A\x2A\x2A\x8D\x4D\xE4\xE8"
 				"linux"			"@_Z21SV_BroadcastVoiceDataP7IClientiPcx"
 			}
-		}
-		"Keys"
-		{
-			"Convar_Windows"	"windows_speaker_config"
-			"Convar_Linux"		"joy_gamecontroller_config"
-			"Convar_Mac"		"cl_debugrumble"
 		}
 	}
 	"nucleardawn"
@@ -47,12 +35,6 @@
 				"linux"			"@_Z21SV_BroadcastVoiceDataP7IClientiPcx"
 			}
 		}
-		"Keys"
-		{
-			"Convar_Windows"	"windows_speaker_config"
-			"Convar_Linux"		"sdl_double_click_size"
-			"Convar_Mac"		"gl_can_mix_shader_gammas"
-		}
 	}
 	"left4dead2"
 	{
@@ -64,12 +46,6 @@
 				"windows"		"\x55\x8B\xEC\x83\xEC\x70\xA1\x2A\x2A\x2A\x2A\x33\xC5\x89\x45\xFC\xA1\x2A\x2A\x2A\x2A\x53\x56"
 				"linux"			"@_Z21SV_BroadcastVoiceDataP7IClientiPcx"
 			}
-		}
-		"Keys"
-		{
-			"Convar_Windows"	"windows_speaker_config"
-			"Convar_Linux"		"joy_gamecontroller_config"
-			"Convar_Mac"		"cl_debugrumble"
 		}
 	}
 	"csgo"
@@ -83,11 +59,5 @@
 				"linux"			"\x55\x89\xE5\x57\x56\x53\x81\xEC\xC4\x00\x00\x00"
 			}
         }
-		"Keys"
-		{
-			"Convar_Windows"	"voice_mixer_volume"
-			"Convar_Linux"		"joy_gamecontroller_config"
-			"Convar_Mac"		"mat_osx_force_csm_enabled"
-		}
     }
 }

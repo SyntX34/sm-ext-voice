@@ -78,7 +78,7 @@ ConVar *g_SvCallOriginalBroadcast = CreateConVar("sm_voice_call_original_broadca
 ConVar *g_SvTestDataHex = CreateConVar("sm_voice_debug_celt_data", "", FCVAR_NOTIFY, "Debug only, celt data in HEX to send instead of incoming data");
 ConVar *g_SvVoiceStats = CreateConVar("sm_voice_stats", "0", FCVAR_NOTIFY, "Enable voice statistics logging (0=off, 1=basic, 2=detailed)");
 ConVar *g_SvVoiceStatus = CreateConVar("sm_voice_status_cmd", "1", FCVAR_NOTIFY, "Enable voice_status command");
-ConVar *g_SvOSDetection = CreateConVar("sm_voice_os_detection", "1", FCVAR_NOTIFY, "Enable OS detection for clients");
+ConVar *g_SvOSDetection = CreateConVar("sm_voice_os_detection", "1", FCVAR_NOTIFY, "Enable OS detection for clients (0=off, 1=on)");
 ConVar *g_SvLogFile = CreateConVar("sm_voice_log_file", "1", FCVAR_NOTIFY, "Save voice logs to file (0=off, 1=on)");
 
 /**
@@ -664,13 +664,13 @@ void CVoice::SDK_OnAllLoaded()
 
 void CVoice::InitializeOSDetection()
 {
-    strncpy(m_sCvarCheck[OS_WINDOWS], "windows_speaker_config", sizeof(m_sCvarCheck[OS_WINDOWS]));
+    strncpy(m_sCvarCheck[OS_WINDOWS], "mat_dxlevel", sizeof(m_sCvarCheck[OS_WINDOWS]));
     m_bShouldCheck[OS_WINDOWS] = true;
     
-    strncpy(m_sCvarCheck[OS_LINUX], "sdl_double_click_size", sizeof(m_sCvarCheck[OS_LINUX]));
+    strncpy(m_sCvarCheck[OS_LINUX], "mat_vsync", sizeof(m_sCvarCheck[OS_LINUX]));
     m_bShouldCheck[OS_LINUX] = true;
     
-    strncpy(m_sCvarCheck[OS_MAC], "gl_can_mix_shader_gammas", sizeof(m_sCvarCheck[OS_MAC]));
+    strncpy(m_sCvarCheck[OS_MAC], "mat_queue_mode", sizeof(m_sCvarCheck[OS_MAC]));
     m_bShouldCheck[OS_MAC] = true;
     
     if (g_SvLogging->GetInt())
@@ -691,22 +691,36 @@ void CVoice::QueryClientOS(int client)
     if (!pClient || pClient->IsFakeClient())
         return;
     
+    if (gpGlobals->curtime - pClient->GetTimeConnected() < 5.0f)
+        return;
+    
     for (int os = OS_WINDOWS; os < OS_TOTAL; os++)
     {
         if (m_bShouldCheck[os])
         {
-            const char *cvarValue = engine->GetClientConVarValue(client, m_sCvarCheck[os]);
-            if (cvarValue && cvarValue[0] != '\0')
+            try
             {
-                m_ClientOS[client] = (OS_Type)os;
-                
+                const char *cvarValue = engine->GetClientConVarValue(client, m_sCvarCheck[os]);
+                if (cvarValue && cvarValue[0] != '\0' && strcmp(cvarValue, "") != 0)
+                {
+                    m_ClientOS[client] = (OS_Type)os;
+                    
+                    if (g_SvLogging->GetInt())
+                    {
+                        const char *name = GetClientName(client);
+                        g_pSM->LogMessage(myself, "Detected OS for %s (%d): %s (cvar: %s = %s)", 
+                            name, client, GetOSName(m_ClientOS[client]), m_sCvarCheck[os], cvarValue);
+                    }
+                    break;
+                }
+            }
+            catch (...)
+            {
                 if (g_SvLogging->GetInt())
                 {
-                    const char *name = GetClientName(client);
-                    g_pSM->LogMessage(myself, "Detected OS for %s (%d): %s (cvar: %s = %s)", 
-                        name, client, GetOSName(m_ClientOS[client]), m_sCvarCheck[os], cvarValue);
+                    g_pSM->LogMessage(myself, "Exception when querying cvar %s for client %d", 
+                        m_sCvarCheck[os], client);
                 }
-                break;
             }
         }
     }
@@ -798,7 +812,9 @@ void CVoice::PrintVoiceStatus(int outputClient)
 {
     if (!iserver)
         return;
-    
+    const char *steamId = GetClientAuthId(i);
+	if (!steamId || !steamId[0])
+		steamId = "UNKNOWN";
     char buffer[1024];
     int totalPlayers = 0;
     int talkingPlayers = 0;
@@ -1020,9 +1036,13 @@ bool CVoice::OnBroadcastVoiceData(IClient *pClient, size_t nBytes, char *data)
     
     // Query OS on first voice if unknown
     if (m_ClientOS[client] == OS_UNKNOWN && g_SvOSDetection->GetBool())
-    {
-        QueryClientOS(client);
-    }
+	{
+		IClient *pClient = iserver->GetClient(client - 1);
+		if (pClient && (gpGlobals->curtime - pClient->GetTimeConnected()) > 10.0f)
+		{
+			QueryClientOS(client);
+		}
+	}
     
     // Detailed logging
     if (g_SvVoiceStats->GetInt() >= 2)

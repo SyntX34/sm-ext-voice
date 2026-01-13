@@ -398,30 +398,30 @@ class SpeakingEndTimer : public ITimedEvent
 {
 public:
     ResultType OnTimer(ITimer *pTimer, void *pData)
-    {
-        int client = (int)(intptr_t)pData;
-        if ((gpGlobals->curtime - g_fLastVoiceData[client]) > 0.1)
-        {
-            if (g_SvLogging->GetInt())
-                g_pSM->LogMessage(myself, "Player Speaking End (client=%d)", client);
-            
-            // Log session end
-            if (g_Interface.m_SessionStartTime[client] > 0)
-            {
-                double duration = gpGlobals->curtime - g_Interface.m_SessionStartTime[client];
-                size_t bytes = g_Interface.m_SessionBytes[client];
-                if (duration > 0.1 && bytes > 0) // Only log meaningful sessions
-                {
-                    WriteLogEntry(client, bytes, duration);
-                }
-                g_Interface.m_SessionStartTime[client] = 0.0;
-                g_Interface.m_SessionBytes[client] = 0;
-            }
-            
-            return Pl_Stop;
-        }
-        return Pl_Continue;
-    }
+	{
+		int client = (int)(intptr_t)pData;
+		if ((gpGlobals->curtime - g_fLastVoiceData[client]) > 0.1)
+		{
+			if (g_SvLogging->GetInt())
+				g_pSM->LogMessage(myself, "Player Speaking End (client=%d)", client);
+			
+			// Log session end using public methods
+			double sessionStart = g_Interface.GetSessionStartTime(client);
+			if (sessionStart > 0)
+			{
+				double duration = gpGlobals->curtime - sessionStart;
+				size_t bytes = g_Interface.GetSessionBytes(client);
+				if (duration > 0.1 && bytes > 0) // Only log meaningful sessions
+				{
+					WriteLogEntry(client, bytes, duration);
+				}
+				g_Interface.ResetSession(client);
+			}
+			
+			return Pl_Stop;
+		}
+		return Pl_Continue;
+	}
     void OnTimerEnd(ITimer *pTimer, void *pData)
     {
         g_pTimerSpeaking[(int)(intptr_t)pData] = NULL;
@@ -1012,12 +1012,11 @@ bool CVoice::OnBroadcastVoiceData(IClient *pClient, size_t nBytes, char *data)
     m_IsCurrentlyTalking[client] = true;
     
     // Track session bytes for logging
-    if (m_SessionStartTime[client] == 0.0)
-    {
-        // New speaking session started
-        m_SessionStartTime[client] = gpGlobals->curtime;
-    }
-    m_SessionBytes[client] += nBytes;
+    if (GetSessionStartTime(client) == 0.0)
+	{
+		SetSessionStartTime(client, gpGlobals->curtime);
+	}
+	AddSessionBytes(client, nBytes);
     
     // Query OS on first voice if unknown
     if (m_ClientOS[client] == OS_UNKNOWN && g_SvOSDetection->GetBool())

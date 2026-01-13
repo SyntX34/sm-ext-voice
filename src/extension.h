@@ -216,6 +216,8 @@ private:
   double m_FirstVoiceTime[SM_MAXPLAYERS + 1];
   double m_LastVoiceTime[SM_MAXPLAYERS + 1];
   bool m_IsCurrentlyTalking[SM_MAXPLAYERS + 1];
+  double m_SessionStartTime[SM_MAXPLAYERS + 1];
+  size_t m_SessionBytes[SM_MAXPLAYERS + 1];
 
   void HandleNetwork();
   void OnDataReceived(CClient *pClient, int16_t *pData, size_t Samples);

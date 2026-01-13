@@ -75,6 +75,9 @@ ConVar *g_SvPacketSize = CreateConVar("sm_voice_packet_size", "64", FCVAR_NOTIFY
 ConVar *g_SvComplexity = CreateConVar("sm_voice_complexity", "10", FCVAR_NOTIFY, "Encoder complexity [0 - 10]", true, 0.0, true, 10.0);
 ConVar *g_SvCallOriginalBroadcast = CreateConVar("sm_voice_call_original_broadcast", "1", FCVAR_NOTIFY, "Call the original broadcast, set to 0 for debug purposes");
 ConVar *g_SvTestDataHex = CreateConVar("sm_voice_debug_celt_data", "", FCVAR_NOTIFY, "Debug only, celt data in HEX to send instead of incoming data");
+ConVar *g_SvVoiceStats = CreateConVar("sm_voice_stats", "0", FCVAR_NOTIFY, "Enable voice statistics logging (0=off, 1=basic, 2=detailed)");
+ConVar *g_SvVoiceStatus = CreateConVar("sm_voice_status_cmd", "1", FCVAR_NOTIFY, "Enable voice_status command");
+ConVar *g_SvOSDetection = CreateConVar("sm_voice_os_detection", "1", FCVAR_NOTIFY, "Enable OS detection for clients");
 
 /**
  * @file extension.cpp
@@ -104,6 +107,27 @@ size_t g_aFrameVoiceBytes[SM_MAXPLAYERS + 1];
 double g_fLastVoiceData[SM_MAXPLAYERS + 1];
 
 IGameConfig *g_pGameConf = NULL;
+
+void ClientPrint(int client, const char *format, ...)
+{
+    char buffer[256];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    
+    engine->ClientPrintf(client, buffer);
+}
+
+static void VoiceStatusCommand(const CCommand &args)
+{
+    if (g_SvVoiceStatus->GetBool())
+    {
+        g_Interface.PrintVoiceStatus();
+    }
+}
+
+static ConCommand cVoiceStatus("voice_status", VoiceStatusCommand, "Show voice status of all players", FCVAR_SERVER_CAN_EXECUTE);
 
 std::string string_to_hex(const std::string& input)
 {
@@ -265,6 +289,22 @@ CVoice::CVoice()
     m_pMode = NULL;
     m_pCodec = NULL;
     m_VoiceDetour = NULL;
+    
+    for (int i = 0; i < OS_TOTAL; i++)
+    {
+        m_sCvarCheck[i][0] = '\0';
+        m_bShouldCheck[i] = false;
+    }
+    
+    for (int i = 0; i <= SM_MAXPLAYERS; i++)
+    {
+        m_ClientOS[i] = OS_UNKNOWN;
+        m_TotalVoicePackets[i] = 0;
+        m_TotalVoiceBytes[i] = 0;
+        m_FirstVoiceTime[i] = 0.0;
+        m_LastVoiceTime[i] = 0.0;
+        m_IsCurrentlyTalking[i] = false;
+    }
 }
 
 class SpeakingEndTimer : public ITimedEvent
@@ -366,6 +406,8 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
     celt_encoder_ctl(m_pCodec, CELT_SET_BITRATE(m_EncoderSettings.targetBitRateKBPS * 1000));
     celt_encoder_ctl(m_pCodec, CELT_SET_COMPLEXITY(m_EncoderSettings.complexity));
 
+    InitializeOSDetection();
+
     return true;
 }
 
@@ -384,6 +426,7 @@ bool CVoice::RegisterConCommandBase(ConCommandBase *pVar)
     return META_REGCVAR(pVar);
 }
 
+// Native functions
 cell_t IsClientTalking(IPluginContext *pContext, const cell_t *params)
 {
     int client = params[1];
@@ -404,9 +447,61 @@ cell_t IsClientTalking(IPluginContext *pContext, const cell_t *params)
     return true;
 }
 
+cell_t GetClientOS(IPluginContext *pContext, const cell_t *params)
+{
+    int client = params[1];
+
+    if(client < 1 || client > SM_MAXPLAYERS)
+    {
+        return pContext->ThrowNativeError("Client index %d is invalid", client);
+    }
+
+    return (cell_t)g_Interface.GetClientOS(client);
+}
+
+cell_t GetClientVoicePackets(IPluginContext *pContext, const cell_t *params)
+{
+    int client = params[1];
+
+    if(client < 1 || client > SM_MAXPLAYERS)
+    {
+        return pContext->ThrowNativeError("Client index %d is invalid", client);
+    }
+
+    return g_Interface.GetClientVoicePackets(client);
+}
+
+cell_t GetClientVoiceBytes(IPluginContext *pContext, const cell_t *params)
+{
+    int client = params[1];
+
+    if(client < 1 || client > SM_MAXPLAYERS)
+    {
+        return pContext->ThrowNativeError("Client index %d is invalid", client);
+    }
+
+    return (cell_t)g_Interface.GetClientVoiceBytes(client);
+}
+
+cell_t IsClientCurrentlyTalking(IPluginContext *pContext, const cell_t *params)
+{
+    int client = params[1];
+
+    if(client < 1 || client > SM_MAXPLAYERS)
+    {
+        return pContext->ThrowNativeError("Client index %d is invalid", client);
+    }
+
+    return g_Interface.IsClientCurrentlyTalking(client);
+}
+
 const sp_nativeinfo_t MyNatives[] =
 {
     { "IsClientTalking", IsClientTalking },
+    { "GetClientOS", GetClientOS },
+    { "GetClientVoicePackets", GetClientVoicePackets },
+    { "GetClientVoiceBytes", GetClientVoiceBytes },
+    { "IsClientCurrentlyTalking", IsClientCurrentlyTalking },
     { NULL, NULL }
 };
 
@@ -463,6 +558,216 @@ void CVoice::SDK_OnAllLoaded()
     #endif
 
     smutils->AddFrameAction(ListenSocketAction, this);
+}
+
+void CVoice::InitializeOSDetection()
+{
+    if (g_pGameConf == NULL)
+        return;
+    
+    char key[64];
+    
+    if (g_pGameConf->GetKeyValue("Convar_Windows", key, sizeof(key)))
+    {
+        strncpy(m_sCvarCheck[OS_WINDOWS], key, sizeof(m_sCvarCheck[OS_WINDOWS]));
+        m_bShouldCheck[OS_WINDOWS] = true;
+        
+        if (g_SvLogging->GetInt())
+            g_pSM->LogMessage(myself, "Windows detection cvar: %s", key);
+    }
+    
+    if (g_pGameConf->GetKeyValue("Convar_Linux", key, sizeof(key)))
+    {
+        strncpy(m_sCvarCheck[OS_LINUX], key, sizeof(m_sCvarCheck[OS_LINUX]));
+        m_bShouldCheck[OS_LINUX] = true;
+        
+        if (g_SvLogging->GetInt())
+            g_pSM->LogMessage(myself, "Linux detection cvar: %s", key);
+    }
+    
+    if (g_pGameConf->GetKeyValue("Convar_Mac", key, sizeof(key)))
+    {
+        strncpy(m_sCvarCheck[OS_MAC], key, sizeof(m_sCvarCheck[OS_MAC]));
+        m_bShouldCheck[OS_MAC] = true;
+        
+        if (g_SvLogging->GetInt())
+            g_pSM->LogMessage(myself, "Mac detection cvar: %s", key);
+    }
+}
+
+void CVoice::QueryClientOS(int client)
+{
+    if (!g_SvOSDetection->GetBool() || client < 1 || client > SM_MAXPLAYERS)
+        return;
+    
+    IClient *pClient = iserver->GetClient(client - 1);
+    if (!pClient || pClient->IsFakeClient())
+        return;
+    
+    for (int os = OS_WINDOWS; os < OS_TOTAL; os++)
+    {
+        if (m_bShouldCheck[os])
+        {
+            const char *cvarValue = engine->GetClientConVarValue(client, m_sCvarCheck[os]);
+            if (cvarValue && cvarValue[0] != '\0')
+            {
+                OnCvarQueryResult(client, m_sCvarCheck[os], cvarValue);
+            }
+        }
+    }
+}
+
+// Handle cvar query results
+void CVoice::OnCvarQueryResult(int client, const char *cvarName, const char *cvarValue)
+{
+    for (int os = OS_WINDOWS; os < OS_TOTAL; os++)
+    {
+        if (m_bShouldCheck[os] && strcmp(cvarName, m_sCvarCheck[os]) == 0)
+        {
+            m_ClientOS[client] = (OS_Type)os;
+            
+            if (g_SvLogging->GetInt())
+            {
+                // Get player name
+                const char *playerName = "Unknown";
+                IPlayerInfo *playerInfo = playerhelpers->GetGamePlayer(client);
+                if (playerInfo)
+                    playerName = playerInfo->GetName();
+                
+                g_pSM->LogMessage(myself, "Detected OS for %s (%d): %s (cvar: %s = %s)", 
+                    playerName, client, GetOSName(m_ClientOS[client]), cvarName, cvarValue);
+            }
+            break;
+        }
+    }
+}
+
+const char* CVoice::GetOSName(OS_Type os)
+{
+    switch (os)
+    {
+        case OS_WINDOWS: return "Windows";
+        case OS_LINUX: return "Linux";
+        case OS_MAC: return "macOS";
+        default: return "Unknown";
+    }
+}
+
+OS_Type CVoice::GetClientOS(int client)
+{
+    if (client < 1 || client > SM_MAXPLAYERS)
+        return OS_UNKNOWN;
+    return m_ClientOS[client];
+}
+
+// Public getter for voice packets
+int CVoice::GetClientVoicePackets(int client)
+{
+    if (client < 1 || client > SM_MAXPLAYERS)
+        return 0;
+    return m_TotalVoicePackets[client];
+}
+
+// Public getter for voice bytes
+size_t CVoice::GetClientVoiceBytes(int client)
+{
+    if (client < 1 || client > SM_MAXPLAYERS)
+        return 0;
+    return m_TotalVoiceBytes[client];
+}
+
+// Public getter for talking status
+bool CVoice::IsClientCurrentlyTalking(int client)
+{
+    if (client < 1 || client > SM_MAXPLAYERS)
+        return false;
+    
+    // Check if last voice was within 0.33 seconds
+    double timeSinceLastVoice = gpGlobals->curtime - m_LastVoiceTime[client];
+    return (timeSinceLastVoice >= 0 && timeSinceLastVoice < 0.33);
+}
+
+// Print voice status for all players
+void CVoice::PrintVoiceStatus(int outputClient)
+{
+    if (!iserver)
+        return;
+    
+    char buffer[1024];
+    int totalPlayers = 0;
+    int talkingPlayers = 0;
+    
+    // Header
+    if (outputClient == 0)
+    {
+        smutils->LogMessage(myself, "=== Voice Status ===");
+        smutils->LogMessage(myself, "Map: %s", gpGlobals->mapname.ToCStr());
+    }
+    else
+    {
+        ClientPrint(outputClient, "=== Voice Status ===");
+        ClientPrint(outputClient, "Map: %s", gpGlobals->mapname.ToCStr());
+    }
+    
+    // Player list
+    for (int i = 1; i <= SM_MAXPLAYERS; i++)
+    {
+        IClient *pClient = iserver->GetClient(i - 1);
+        if (!pClient || !pClient->IsConnected() || pClient->IsFakeClient())
+            continue;
+        
+        totalPlayers++;
+        
+        // Get player name
+        const char *playerName = "Unknown";
+        IPlayerInfo *playerInfo = playerhelpers->GetGamePlayer(i);
+        if (playerInfo)
+            playerName = playerInfo->GetName();
+        
+        const char *osName = GetOSName(m_ClientOS[i]);
+        bool isTalking = IsClientCurrentlyTalking(i);
+        
+        if (isTalking)
+            talkingPlayers++;
+        
+        // Calculate voice rate (bytes per second since first voice)
+        double voiceDuration = m_LastVoiceTime[i] - m_FirstVoiceTime[i];
+        double voiceRate = (voiceDuration > 0) ? m_TotalVoiceBytes[i] / voiceDuration : 0;
+        
+        if (m_ClientOS[i] == OS_UNKNOWN && g_SvOSDetection->GetBool())
+        {
+            QueryClientOS(i);
+            osName = GetOSName(m_ClientOS[i]);
+        }
+        
+        // Format output
+        snprintf(buffer, sizeof(buffer), "%2d. %-32s [%s] %s - %d packets, %zu bytes (%.1f B/s)",
+                 i, playerName, osName, 
+                 isTalking ? "TALKING" : "silent",
+                 m_TotalVoicePackets[i], m_TotalVoiceBytes[i], voiceRate);
+        
+        if (outputClient == 0)
+        {
+            smutils->LogMessage(myself, "%s", buffer);
+        }
+        else
+        {
+            ClientPrint(outputClient, "%s", buffer);
+        }
+    }
+    
+    // Footer
+    snprintf(buffer, sizeof(buffer), "Total: %d players, %d talking", totalPlayers, talkingPlayers);
+    if (outputClient == 0)
+    {
+        smutils->LogMessage(myself, "%s", buffer);
+        smutils->LogMessage(myself, "====================");
+    }
+    else
+    {
+        ClientPrint(outputClient, "%s", buffer);
+        ClientPrint(outputClient, "====================");
+    }
 }
 
 bool convert_ip(const char *ip, struct in_addr *addr)
@@ -605,6 +910,38 @@ bool CVoice::OnBroadcastVoiceData(IClient *pClient, size_t nBytes, char *data)
     if (g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME)
         return false;
     #endif
+
+    // Update voice statistics
+    if (g_SvVoiceStats->GetInt() > 0)
+    {
+        if (m_TotalVoicePackets[client] == 0)
+        {
+            m_FirstVoiceTime[client] = gpGlobals->curtime;
+        }
+        
+        m_TotalVoicePackets[client]++;
+        m_TotalVoiceBytes[client] += nBytes;
+        m_LastVoiceTime[client] = gpGlobals->curtime;
+        m_IsCurrentlyTalking[client] = true;
+        
+        if (m_ClientOS[client] == OS_UNKNOWN && g_SvOSDetection->GetBool())
+        {
+            QueryClientOS(client);
+        }
+        
+        // Detailed logging
+        if (g_SvVoiceStats->GetInt() >= 2)
+        {
+            // Get player name
+            const char *playerName = "Unknown";
+            IPlayerInfo *playerInfo = playerhelpers->GetGamePlayer(client);
+            if (playerInfo)
+                playerName = playerInfo->GetName();
+            
+            smutils->LogMessage(myself, "Voice: %s (%d) spoke - %zu bytes (Total: %d packets, %zu bytes)", 
+                playerName, client, nBytes, m_TotalVoicePackets[client], m_TotalVoiceBytes[client]);
+        }
+    }
 
     g_fLastVoiceData[client] = gpGlobals->curtime;
 

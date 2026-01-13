@@ -63,6 +63,14 @@ typedef __int64		int64;
 typedef long long	int64;
 #endif
 
+enum OS_Type {
+    OS_UNKNOWN = -1,
+    OS_WINDOWS = 0,
+    OS_LINUX = 1,
+    OS_MAC = 2,
+    OS_TOTAL = 3
+};
+
 class CDetour;
 class IClient;
 
@@ -152,6 +160,14 @@ public:
   bool OnBroadcastVoiceData(IClient *pClient, size_t nBytes, char *data);
 
   void ListenSocket();
+  
+  // New public methods
+  void PrintVoiceStatus(int outputClient = 0);
+  OS_Type GetClientOS(int client);
+  int GetClientVoicePackets(int client);
+  size_t GetClientVoiceBytes(int client);
+  bool IsClientCurrentlyTalking(int client);
+  const char* GetOSName(OS_Type os);
 
 private:
   int m_ListenSocket;
@@ -188,11 +204,28 @@ private:
   CELTEncoder *m_pCodec;
 
   CDetour *m_VoiceDetour;
+  
+  // OS Detection
+  char m_sCvarCheck[OS_TOTAL][32];
+  bool m_bShouldCheck[OS_TOTAL];
+  OS_Type m_ClientOS[SM_MAXPLAYERS + 1];
+  
+  // Voice Statistics
+  int m_TotalVoicePackets[SM_MAXPLAYERS + 1];
+  size_t m_TotalVoiceBytes[SM_MAXPLAYERS + 1];
+  double m_FirstVoiceTime[SM_MAXPLAYERS + 1];
+  double m_LastVoiceTime[SM_MAXPLAYERS + 1];
+  bool m_IsCurrentlyTalking[SM_MAXPLAYERS + 1];
 
   void HandleNetwork();
   void OnDataReceived(CClient *pClient, int16_t *pData, size_t Samples);
   void HandleVoiceData();
   void BroadcastVoiceData(IClient *pClient, size_t nBytes, unsigned char *pData);
+  
+  // New private methods
+  void InitializeOSDetection();
+  void QueryClientOS(int client);
+  void OnCvarQueryResult(int client, const char *cvarName, const char *cvarValue);
 };
 
 #endif // _INCLUDE_SOURCEMOD_EXTENSION_PROPER_H_

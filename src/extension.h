@@ -37,16 +37,22 @@
 #include <ws2tcpip.h>
 #else
 #include <poll.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
 #endif
 
 #include "smsdk_ext.h"
+#include <ITimerSystem.h>
+#include <iclient.h>
+
 #ifdef EXPORT
 #undef EXPORT
 #include "opus.h"
 #endif
 #include "ringbuffer.h"
-
-
 
 /**
 * @file extension.h
@@ -61,8 +67,22 @@ typedef __int64		int64;
 typedef long long	int64;
 #endif
 
+// Forward declarations
 class CDetour;
 class IClient;
+class SpeakingEndTimer;
+
+// Global variable declarations
+extern ConVar g_SvLogging;
+extern ConVar g_SmVoiceAddr;
+extern ConVar g_SmVoicePort;
+extern ITimer *g_pTimerSpeaking[SM_MAXPLAYERS + 1];
+
+// Global functions
+extern double getTime();
+
+// Global timer instance
+extern SpeakingEndTimer s_SpeakingEndTimer;
 
 /**
 * @brief Sample implementation of the SDK Extension.
@@ -107,6 +127,7 @@ public:
   * @return			True if working, false otherwise.
   */
   //virtual bool QueryRunning(char *error, size_t maxlength);
+
 public:
 #if defined SMEXT_CONF_METAMOD
   /**
@@ -148,7 +169,6 @@ public:
   CVoice();
   void OnGameFrame(bool simulating);
   bool OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data);
-
   void ListenSocket();
 
 private:
@@ -173,8 +193,6 @@ private:
   double m_AvailableTime;
 
   OpusEncoder *m_OpusEncoder;
-
-  
 
   CDetour *m_VoiceDetour;
 

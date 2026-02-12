@@ -42,13 +42,11 @@
 #include "smsdk_ext.h"
 #ifdef EXPORT
 #undef EXPORT
-#include "celt_header.h"
+#include "opus.h"
 #endif
 #include "ringbuffer.h"
 
-#if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
-#include "csgo/netmessages.pb.h"
-#endif
+
 
 /**
 * @file extension.h
@@ -149,7 +147,7 @@ public:  // IConCommandBaseAccessor
 public:
   CVoice();
   void OnGameFrame(bool simulating);
-  bool OnBroadcastVoiceData(IClient *pClient, size_t nBytes, char *data);
+  bool OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data);
 
   void ListenSocket();
 
@@ -174,25 +172,16 @@ private:
 
   double m_AvailableTime;
 
-  struct CEncoderSettings
-  {
-    celt_int32 sampleRateHz;
-    celt_int32 targetBitRateKBPS;
-    celt_int32 frameSize;
-    celt_int32 packetSize;
-    celt_int32 complexity;
-    double frameTime;
-  } m_EncoderSettings;
+  OpusEncoder *m_OpusEncoder;
 
-  CELTMode *m_pMode;
-  CELTEncoder *m_pCodec;
+  
 
   CDetour *m_VoiceDetour;
 
   void HandleNetwork();
   void OnDataReceived(CClient *pClient, int16_t *pData, size_t Samples);
   void HandleVoiceData();
-  void BroadcastVoiceData(IClient *pClient, size_t nBytes, unsigned char *pData);
+  void BroadcastVoiceData(IClient *pClient, int nBytes, unsigned char *pData);
 };
 
 #endif // _INCLUDE_SOURCEMOD_EXTENSION_PROPER_H_

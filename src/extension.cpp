@@ -73,9 +73,9 @@
 ConVar *g_SvLogging = CreateConVar("sm_voice_logging", "1", FCVAR_NOTIFY, "Log client connections");
 ConVar *g_SmVoiceAddr = CreateConVar("sm_voice_addr", "127.0.0.1", FCVAR_PROTECTED, "Voice server listen ip address [0.0.0.0 for docker]");
 ConVar *g_SmVoicePort = CreateConVar("sm_voice_port", "27033", FCVAR_PROTECTED, "Voice server listen port [1025 - 65535]", true, 1025.0, true, 65535.0);
-ConVar *g_SvSampleRateHz = CreateConVar("sm_voice_sample_rate_hz", "22050", FCVAR_NOTIFY, "Sample rate in Hertz [11050 - 48000]", true, 11050.0, true, 48000.0);
+ConVar *g_SvSampleRateHz = CreateConVar("sm_voice_sample_rate_hz", "24000", FCVAR_NOTIFY, "Sample rate in Hertz - Opus supports: 8000, 12000, 16000, 24000, 48000", true, 8000.0, true, 48000.0);
 ConVar *g_SvBitRateKbps = CreateConVar("sm_voice_bit_rate_kbps", "64", FCVAR_NOTIFY, "Bit rate in kbps for one channel [24 - 128]", true, 24.0, true, 128.0);
-ConVar *g_SvFrameSize = CreateConVar("sm_voice_frame_size", "512", FCVAR_NOTIFY, "Frame size per packet");
+ConVar *g_SvFrameSize = CreateConVar("sm_voice_frame_size", "480", FCVAR_NOTIFY, "Frame size in samples - Must match sample rate: 24kHz=480, 16kHz=320, 48kHz=960");
 ConVar *g_SvPacketSize = CreateConVar("sm_voice_packet_size", "64", FCVAR_NOTIFY, "Packet size for voice data");
 ConVar *g_SvComplexity = CreateConVar("sm_voice_complexity", "10", FCVAR_NOTIFY, "Encoder complexity [0 - 10]", true, 0.0, true, 10.0);
 ConVar *g_SvCallOriginalBroadcast = CreateConVar("sm_voice_call_original_broadcast", "1", FCVAR_NOTIFY, "Call the original broadcast, set to 0 for debug purposes");
@@ -405,46 +405,49 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 
     AutoExecConfig(g_pCVar, true);
 
-    // Log encoder settings if logging is enabled
+    // Force Opus-compatible settings
+    int sampleRate = 24000;  // 24kHz is Opus standard, good for voice
+    int frameSize = 480;     // 20ms frames at 24kHz (480 samples)
+    int bitRate = 64;        // 64 kbps
+    int complexity = 10;     // Max complexity
+    int packetSize = 64;     // Packet size
+
+    // Log the settings we're actually using
     if (g_SvLogging->GetInt())
     {
         g_pSM->LogMessage(myself, "== Opus Encoder Settings ==");
-        g_pSM->LogMessage(myself, "SampleRate: %d Hz", g_SvSampleRateHz->GetInt());
-        g_pSM->LogMessage(myself, "BitRate: %d kbps", g_SvBitRateKbps->GetInt());
-        g_pSM->LogMessage(myself, "FrameSize: %d samples", g_SvFrameSize->GetInt());
-        g_pSM->LogMessage(myself, "PacketSize: %d bytes", g_SvPacketSize->GetInt());
-        g_pSM->LogMessage(myself, "Complexity: %d", g_SvComplexity->GetInt());
+        g_pSM->LogMessage(myself, "SampleRate: %d Hz (forced from %d)", sampleRate, g_SvSampleRateHz->GetInt());
+        g_pSM->LogMessage(myself, "BitRate: %d kbps", bitRate);
+        g_pSM->LogMessage(myself, "FrameSize: %d samples", frameSize);
+        g_pSM->LogMessage(myself, "PacketSize: %d bytes", packetSize);
+        g_pSM->LogMessage(myself, "Complexity: %d", complexity);
     }
 
-    // Encoder settings - USE THE CONVARS!
-    m_EncoderSettings.sampleRateHz = g_SvSampleRateHz->GetInt();
-    m_EncoderSettings.targetBitRateKBPS = g_SvBitRateKbps->GetInt();
-    m_EncoderSettings.frameSize = g_SvFrameSize->GetInt();
-    m_EncoderSettings.packetSize = g_SvPacketSize->GetInt();
-    m_EncoderSettings.complexity = g_SvComplexity->GetInt();
-    m_EncoderSettings.frameTime = (double)m_EncoderSettings.frameSize / (double)m_EncoderSettings.sampleRateHz;
+    m_EncoderSettings.sampleRateHz = sampleRate;
+    m_EncoderSettings.targetBitRateKBPS = bitRate;
+    m_EncoderSettings.frameSize = frameSize;
+    m_EncoderSettings.packetSize = packetSize;
+    m_EncoderSettings.complexity = complexity;
+    m_EncoderSettings.frameTime = (double)frameSize / (double)sampleRate;
 
-    // Create Opus encoder with the SAMPLE RATE FROM CONVAR
     int err;
-    m_OpusEncoder = opus_encoder_create(m_EncoderSettings.sampleRateHz, 1, OPUS_APPLICATION_VOIP, &err);
+    m_OpusEncoder = opus_encoder_create(sampleRate, 1, OPUS_APPLICATION_VOIP, &err);
     if (err < 0)
     {
-        smutils->LogError(myself, "failed to create opus encoder: %s", opus_strerror(err));
+        snprintf(error, maxlength, "failed to create opus encoder: %s", opus_strerror(err));
         return false;
     }
 
-    // Apply settings from convars
-    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(m_EncoderSettings.targetBitRateKBPS * 1000));
+    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(bitRate * 1000));
     if (err < 0)
         smutils->LogError(myself, "failed to set bitrate: %s", opus_strerror(err));
 
-    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_COMPLEXITY(m_EncoderSettings.complexity));
+    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_COMPLEXITY(complexity));
     if (err < 0)
         smutils->LogError(myself, "failed to set complexity: %s", opus_strerror(err));
 
-    // Set other optimal settings for voice
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_NARROWBAND));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_WIDEBAND));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PACKET_LOSS_PERC(5));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_INBAND_FEC(1));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_DTX(1));

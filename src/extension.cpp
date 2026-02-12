@@ -31,22 +31,28 @@
 //#define _GNU_SOURCE
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <opus.h>
 
 #ifdef _WIN32
   #include <winsock2.h>
   #include <ws2tcpip.h>
+  #include <windows.h>
+  #include <basetsd.h>
   typedef SOCKET socket_t;
+  typedef int socklen_t;
+  typedef SSIZE_T ssize_t;
 #else
+  #include <sys/types.h>
+  #include <sys/socket.h>
+  #include <sys/ioctl.h>
+  #include <netinet/in.h>
+  #include <arpa/inet.h>
+  #include <fcntl.h>
+  #include <poll.h>
+  #include <unistd.h>
   typedef int socket_t;
 #endif
+
+#include <opus.h>
 
 #include <iclient.h>
 #include <iserver.h>
@@ -73,17 +79,10 @@ ConVar g_SmVoicePort("sm_voice_port", "27020", FCVAR_PROTECTED, "Voice server li
  * @brief Implement extension code here.
  */
 
-#ifdef _WIN32
-#include <basetsd.h>
-typedef SSIZE_T ssize_t;
-#endif
-
 template <typename T> inline T min_ext(T a, T b) { return a<b?a:b; }
 
 CVoice g_Interface;
 SMEXT_LINK(&g_Interface);
-
-
 
 CGlobalVars *gpGlobals = NULL;
 ISDKTools *g_pSDKTools = NULL;
@@ -197,7 +196,6 @@ const unsigned int CRCTable[256] = {
   0xbdbdf21c, 0xcabac28a, 0x53b39330, 0x24b4a3a6, 0xbad03605, 0xcdd70693,
   0x54de5729, 0x23d967bf, 0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
   0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d};
-
 
 unsigned int UTIL_CRC32(const void *pdata, size_t data_length)
 {
@@ -351,6 +349,16 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
         }
         return false;
     }
+
+#ifdef _WIN32
+    // Initialize Winsock
+    WSADATA wsaData;
+    int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (iResult != 0) {
+        snprintf(error, maxlength, "WSAStartup failed: %d", iResult);
+        return false;
+    }
+#endif
 
     // Setup voice detour.
     CDetourManager::Init(g_pSM->GetScriptingEngine(), g_pGameConf);
@@ -602,6 +610,10 @@ void CVoice::SDK_OnUnload()
     }
 
     opus_encoder_destroy(m_OpusEncoder);
+
+#ifdef _WIN32
+    WSACleanup();
+#endif
 }
 
 void CVoice::OnGameFrame(bool simulating)
@@ -763,7 +775,8 @@ void CVoice::HandleNetwork()
             pClient->m_Socket = -1;
             m_aPollFds[PollFds].fd = -1;
             CompressPollFds = true;
-                
+            
+            if (g_SvLogging.GetInt())
                 smutils->LogMessage(myself, "Client %d disconnected!", Client);
             continue;
         }
@@ -871,7 +884,6 @@ void CVoice::HandleVoiceData()
     if (m_AvailableTime > getTime() + maxBuffer)
         return;
     
-
     IClient *pClient = iserver->GetClient(0);
     if(!pClient)
         return;
@@ -909,10 +921,6 @@ void CVoice::HandleVoiceData()
     {
         int16_t aBuffer[TotalSamplesPerFrame];
 
-        size_t OldReadIdx = m_Buffer.m_ReadIndex;
-        size_t OldCurLength = m_Buffer.CurrentLength();
-        size_t OldTotalLength = m_Buffer.TotalLength();
-
         if(!m_Buffer.Pop(aBuffer, TotalSamplesPerFrame))
         {
             smutils->LogError(myself, "Buffer pop failed!");
@@ -924,7 +932,6 @@ void CVoice::HandleVoiceData()
         *pFrameSize = sizeof(aFinal) - sizeof(uint32_t) - FinalSize;
 
         // Encode with Opus
-        //pcm <tt>opus_int16*</tt>: Input signal (interleaved if 2 channels). length is frame_size*channels*sizeof(opus_int16)
         int nbBytes = opus_encode(m_OpusEncoder, (const opus_int16*)aBuffer, SamplesPerChannel,
                                   &aFinal[FinalSize], *pFrameSize);
         if (nbBytes <= 1)

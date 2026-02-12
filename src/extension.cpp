@@ -70,9 +70,27 @@
 // voice packets are sent over unreliable netchannel
 #define NET_MAX_VOICE_BYTES_FRAME (10 * (5 + 64))
 
-ConVar g_SvLogging("sv_voice_extension_logging", "0", FCVAR_NONE, "Enable voice extension logging");
-ConVar g_SmVoiceAddr("sm_voice_addr", "127.0.0.1", FCVAR_PROTECTED, "Voice server listen ip address.");
-ConVar g_SmVoicePort("sm_voice_port", "27020", FCVAR_PROTECTED, "Voice server listen port.", true, 1025.0, true, 65535.0);
+// ConVar pointers for auto-config and callbacks
+ConVar *g_SvLogging = NULL;
+ConVar *g_SmVoiceAddr = NULL;
+ConVar *g_SmVoicePort = NULL;
+
+// ConVar change callback
+void OnConVarChanged(IConVar *var, const char *pOldValue, float flOldValue)
+{
+    ConVarRef cvar(var);
+    
+    if (strcmp(cvar.GetName(), "sm_voice_addr") == 0 || 
+        strcmp(cvar.GetName(), "sm_voice_port") == 0)
+    {
+        // Restart the listen socket when address or port changes
+        if (g_Interface.IsRunning())
+        {
+            smutils->LogMessage(myself, "Voice server address/port changed, restarting listener...");
+            g_Interface.RestartListener();
+        }
+    }
+}
 
 /**
  * @file extension.cpp
@@ -215,7 +233,7 @@ unsigned int UTIL_CRC32(const void *pdata, size_t data_length)
 #if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
 void PrintCCLCMsg_VoiceData(const char *funcName, int client, const CCLCMsg_VoiceData &msg, bool drop)
 {
-    if (!g_SvLogging.GetInt()) return;
+    if (!g_SvLogging->GetInt()) return;
     
     g_pSM->LogMessage(myself, "===START=======%s=============", funcName);
     g_pSM->LogMessage(myself, "client %d", client);
@@ -238,7 +256,7 @@ void PrintCCLCMsg_VoiceData(const char *funcName, int client, const CCLCMsg_Voic
 
 DETOUR_DECL_STATIC3(SV_BroadcastVoiceData_CSGO, int, IClient *, pClient, const CCLCMsg_VoiceData &, msg, bool, drop)
 {
-    if (g_SvLogging.GetInt())
+    if (g_SvLogging->GetInt())
         PrintCCLCMsg_VoiceData("SV_BroadcastVoiceData_CSGO", pClient->GetPlayerSlot() + 1, msg, drop);
 
     if (pClient && g_Interface.OnBroadcastVoiceData(pClient, msg.data().size(), (char*)msg.data().c_str()))
@@ -326,7 +344,7 @@ public:
         int client = (int)(intptr_t)pData;
         if ((gpGlobals->curtime - g_fLastVoiceData[client]) > 0.1)
         {
-            if (g_SvLogging.GetInt())
+            if (g_SvLogging->GetInt())
                 g_pSM->LogMessage(myself, "Player Speaking End (client=%d)", client);
             return Pl_Stop;
         }
@@ -398,7 +416,7 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(128000)); 
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC)); //MDCT mode
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_LSB_DEPTH(16)); 
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PACKET_LOSS_PERC(0));
     opus_encoder_ctl(m_OpusEncoder, OPUS_SET_FORCE_CHANNELS(2));
@@ -418,6 +436,28 @@ bool CVoice::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
     GET_V_IFACE_CURRENT(GetServerFactory, hltvdirector, IHLTVDirector, INTERFACEVERSION_HLTVDIRECTOR);
     gpGlobals = ismm->GetCGlobals();
     ConVar_Register(0, this);
+
+    // Create and register convars with AutoExecConfig support
+    g_SvLogging = new ConVar("sv_voice_extension_logging", 
+                            "0", 
+                            FCVAR_NONE, 
+                            "Enable voice extension logging",
+                            true, 0.0, true, 1.0,
+                            &OnConVarChanged);
+    
+    g_SmVoiceAddr = new ConVar("sm_voice_addr", 
+                              "127.0.0.1", 
+                              FCVAR_PROTECTED, 
+                              "Voice server listen ip address.",
+                              true, 0.0, false, 0.0,
+                              &OnConVarChanged);
+    
+    g_SmVoicePort = new ConVar("sm_voice_port", 
+                              "27020", 
+                              FCVAR_PROTECTED, 
+                              "Voice server listen port.",
+                              true, 1025.0, true, 65535.0,
+                              &OnConVarChanged);
 
     return true;
 }
@@ -553,15 +593,15 @@ void CVoice::ListenSocket()
     sockaddr_in bindAddr;
     memset(&bindAddr, 0, sizeof(bindAddr));
     bindAddr.sin_family = AF_INET;
-    if (!convert_ip(g_SmVoiceAddr.GetString(), &bindAddr.sin_addr))
+    if (!convert_ip(g_SmVoiceAddr->GetString(), &bindAddr.sin_addr))
     {
         smutils->LogError(myself, "Failed to convert ip.");
         SDK_OnUnload();
         return;
     }
-    bindAddr.sin_port = htons(g_SmVoicePort.GetInt());
+    bindAddr.sin_port = htons(g_SmVoicePort->GetInt());
 
-    smutils->LogMessage(myself, "Binding to %s:%d!", g_SmVoiceAddr.GetString(), g_SmVoicePort.GetInt());
+    smutils->LogMessage(myself, "Binding to %s:%d!", g_SmVoiceAddr->GetString(), g_SmVoicePort->GetInt());
 
     if(bind(m_ListenSocket, (sockaddr *)&bindAddr, sizeof(sockaddr_in)) < 0)
     {
@@ -582,6 +622,59 @@ void CVoice::ListenSocket()
     m_PollFds++;
 
     smutils->AddGameFrameHook(::OnGameFrame);
+}
+
+void CVoice::RestartListener()
+{
+    // Close existing socket
+    if (m_ListenSocket != -1)
+    {
+        close_socket(m_ListenSocket);
+        m_ListenSocket = -1;
+    }
+    
+    // Reset poll descriptors
+    m_PollFds = 0;
+    for(int i = 0; i < 1 + MAX_CLIENTS; i++)
+        m_aPollFds[i].fd = -1;
+    
+    // Close all client connections
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (m_aClients[i].m_Socket != -1)
+        {
+            close_socket(m_aClients[i].m_Socket);
+            m_aClients[i].m_Socket = -1;
+        }
+        m_aClients[i].m_New = true;
+    }
+    
+    // Recreate socket
+    m_ListenSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if(m_ListenSocket < 0)
+    {
+        smutils->LogError(myself, "Failed creating socket in RestartListener.");
+        return;
+    }
+
+    int yes = 1;
+    setsockopt(m_ListenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
+
+    #ifdef _WIN32
+        unsigned long nonblock = 1;
+        ioctlsocket(m_ListenSocket, FIONBIO, &nonblock);
+    #else
+        int flags = fcntl(m_ListenSocket, F_GETFL, 0);
+        fcntl(m_ListenSocket, F_SETFL, flags | O_NONBLOCK);
+    #endif
+
+    // Re-add frame action to trigger ListenSocket again
+    smutils->AddFrameAction(ListenSocketAction, this);
+}
+
+bool CVoice::IsRunning()
+{
+    return (m_ListenSocket != -1 && m_PollFds > 0);
 }
 
 void CVoice::SDK_OnUnload()
@@ -609,7 +702,30 @@ void CVoice::SDK_OnUnload()
         }
     }
 
-    opus_encoder_destroy(m_OpusEncoder);
+    if (m_OpusEncoder)
+    {
+        opus_encoder_destroy(m_OpusEncoder);
+        m_OpusEncoder = NULL;
+    }
+
+    // Clean up convars
+    if (g_SvLogging)
+    {
+        delete g_SvLogging;
+        g_SvLogging = NULL;
+    }
+    
+    if (g_SmVoiceAddr)
+    {
+        delete g_SmVoiceAddr;
+        g_SmVoiceAddr = NULL;
+    }
+    
+    if (g_SmVoicePort)
+    {
+        delete g_SmVoicePort;
+        g_SmVoicePort = NULL;
+    }
 
 #ifdef _WIN32
     WSACleanup();
@@ -643,6 +759,13 @@ bool CVoice::OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data)
     }
 
     g_fLastVoiceData[client] = gpGlobals->curtime;
+
+    // Start speaking timer if not already running
+    if (g_pTimerSpeaking[client] == NULL && g_SvLogging->GetInt())
+    {
+        g_pTimerSpeaking[client] = timersys->CreateTimer(&s_SpeakingEndTimer, 0.3f, (void *)(intptr_t)client, 0);
+        g_pSM->LogMessage(myself, "Player Speaking Start (client=%d)", client);
+    }
 
     return true;
 }
@@ -690,13 +813,14 @@ void CVoice::HandleNetwork()
                 m_aClients[Client].m_LastValidData = 0.0;
                 m_aClients[Client].m_New = true;
                 m_aClients[Client].m_UnEven = false;
+                m_aClients[Client].m_Remainder = 0;
 
                 m_aPollFds[m_PollFds].fd = Socket;
                 m_aPollFds[m_PollFds].events = POLLIN | POLLHUP;
                 m_aPollFds[m_PollFds].revents = 0;
                 m_PollFds++;
 
-                if (g_SvLogging.GetInt())
+                if (g_SvLogging->GetInt())
                     smutils->LogMessage(myself, "Client %d connected!", Client);
             }
         }
@@ -728,7 +852,7 @@ void CVoice::HandleNetwork()
             pClient->m_Socket = -1;
             m_aPollFds[PollFds].fd = -1;
             CompressPollFds = true;
-            if (g_SvLogging.GetInt())
+            if (g_SvLogging->GetInt())
                 smutils->LogMessage(myself, "Client %d disconnected!", Client);
             continue;
         }
@@ -776,7 +900,7 @@ void CVoice::HandleNetwork()
             m_aPollFds[PollFds].fd = -1;
             CompressPollFds = true;
             
-            if (g_SvLogging.GetInt())
+            if (g_SvLogging->GetInt())
                 smutils->LogMessage(myself, "Client %d disconnected!", Client);
             continue;
         }
@@ -864,7 +988,7 @@ void CVoice::HandleVoiceData()
     if(!FramesAvailable)
         return;
 
-    int FramesMax = 2; //used to be 5
+    int FramesMax = 2;
     bool reset_state = false;
     if (FramesAvailable <= FramesMax)
     {

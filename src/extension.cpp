@@ -68,12 +68,29 @@
 #include "convarhelper.h"
 
 // voice packets are sent over unreliable netchannel
-#define NET_MAX_VOICE_BYTES_FRAME (10 * (5 + 64))
+#define NET_MAX_VOICE_BYTES_FRAME (8 * (5 + 64))
 
-// EXACT same as original - CreateConVar at top level
-ConVar *g_SvLogging = CreateConVar("sm_voice_logging", "0", FCVAR_NOTIFY, "Log client connections");
+ConVar *g_SvLogging = CreateConVar("sm_voice_logging", "1", FCVAR_NOTIFY, "Log client connections");
 ConVar *g_SmVoiceAddr = CreateConVar("sm_voice_addr", "127.0.0.1", FCVAR_PROTECTED, "Voice server listen ip address [0.0.0.0 for docker]");
-ConVar *g_SmVoicePort = CreateConVar("sm_voice_port", "27020", FCVAR_PROTECTED, "Voice server listen port [1025 - 65535]", true, 1025.0, true, 65535.0);
+ConVar *g_SmVoicePort = CreateConVar("sm_voice_port", "27033", FCVAR_PROTECTED, "Voice server listen port [1025 - 65535]", true, 1025.0, true, 65535.0);
+ConVar *g_SvSampleRateHz = CreateConVar("sm_voice_sample_rate_hz", "22050", FCVAR_NOTIFY, "Sample rate in Hertz [11050 - 48000]", true, 11050.0, true, 48000.0);
+ConVar *g_SvBitRateKbps = CreateConVar("sm_voice_bit_rate_kbps", "64", FCVAR_NOTIFY, "Bit rate in kbps for one channel [24 - 128]", true, 24.0, true, 128.0);
+ConVar *g_SvFrameSize = CreateConVar("sm_voice_frame_size", "512", FCVAR_NOTIFY, "Frame size per packet");
+ConVar *g_SvPacketSize = CreateConVar("sm_voice_packet_size", "64", FCVAR_NOTIFY, "Packet size for voice data");
+ConVar *g_SvComplexity = CreateConVar("sm_voice_complexity", "10", FCVAR_NOTIFY, "Encoder complexity [0 - 10]", true, 0.0, true, 10.0);
+ConVar *g_SvCallOriginalBroadcast = CreateConVar("sm_voice_call_original_broadcast", "1", FCVAR_NOTIFY, "Call the original broadcast, set to 0 for debug purposes");
+ConVar *g_SvTestDataHex = CreateConVar("sm_voice_debug_celt_data", "", FCVAR_NOTIFY, "Debug only, celt data in HEX to send instead of incoming data");
+
+// Add encoder settings struct
+struct EncoderSettings_t
+{
+    int sampleRateHz;
+    int targetBitRateKBPS;
+    int frameSize;      // samples per frame
+    int packetSize;     // max encoded packet size
+    int complexity;     // 0-10
+    double frameTime;   // frameSize / sampleRateHz
+} m_EncoderSettings;
 
 /**
  * @file extension.cpp
@@ -388,27 +405,49 @@ bool CVoice::SDK_OnLoad(char *error, size_t maxlength, bool late)
 
     AutoExecConfig(g_pCVar, true);
 
+    // Log encoder settings if logging is enabled
+    if (g_SvLogging->GetInt())
+    {
+        g_pSM->LogMessage(myself, "== Opus Encoder Settings ==");
+        g_pSM->LogMessage(myself, "SampleRate: %d Hz", g_SvSampleRateHz->GetInt());
+        g_pSM->LogMessage(myself, "BitRate: %d kbps", g_SvBitRateKbps->GetInt());
+        g_pSM->LogMessage(myself, "FrameSize: %d samples", g_SvFrameSize->GetInt());
+        g_pSM->LogMessage(myself, "PacketSize: %d bytes", g_SvPacketSize->GetInt());
+        g_pSM->LogMessage(myself, "Complexity: %d", g_SvComplexity->GetInt());
+    }
+
+    // Encoder settings - USE THE CONVARS!
+    m_EncoderSettings.sampleRateHz = g_SvSampleRateHz->GetInt();
+    m_EncoderSettings.targetBitRateKBPS = g_SvBitRateKbps->GetInt();
+    m_EncoderSettings.frameSize = g_SvFrameSize->GetInt();
+    m_EncoderSettings.packetSize = g_SvPacketSize->GetInt();
+    m_EncoderSettings.complexity = g_SvComplexity->GetInt();
+    m_EncoderSettings.frameTime = (double)m_EncoderSettings.frameSize / (double)m_EncoderSettings.sampleRateHz;
+
+    // Create Opus encoder with the SAMPLE RATE FROM CONVAR
     int err;
-    // Create Opus encoder
-    m_OpusEncoder = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &err);
-    if (err<0)
+    m_OpusEncoder = opus_encoder_create(m_EncoderSettings.sampleRateHz, 1, OPUS_APPLICATION_VOIP, &err);
+    if (err < 0)
     {
-        smutils->LogError(myself, "failed to create encode: %s", opus_strerror(err));
+        smutils->LogError(myself, "failed to create opus encoder: %s", opus_strerror(err));
         return false;
     }
 
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(128000)); 
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_LSB_DEPTH(16)); 
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PACKET_LOSS_PERC(0));
-    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_FORCE_CHANNELS(2));
+    // Apply settings from convars
+    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BITRATE(m_EncoderSettings.targetBitRateKBPS * 1000));
+    if (err < 0)
+        smutils->LogError(myself, "failed to set bitrate: %s", opus_strerror(err));
 
-    if (err<0)
-    {
-        smutils->LogError(myself, "failed to set bitrate: %s\n", opus_strerror(err));
-        return false;
-    }
+    err = opus_encoder_ctl(m_OpusEncoder, OPUS_SET_COMPLEXITY(m_EncoderSettings.complexity));
+    if (err < 0)
+        smutils->LogError(myself, "failed to set complexity: %s", opus_strerror(err));
+
+    // Set other optimal settings for voice
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_NARROWBAND));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_PACKET_LOSS_PERC(5));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_INBAND_FEC(1));
+    opus_encoder_ctl(m_OpusEncoder, OPUS_SET_DTX(1));
 
     return true;
 }
@@ -585,59 +624,6 @@ void CVoice::ListenSocket()
     smutils->AddGameFrameHook(::OnGameFrame);
 }
 
-void CVoice::RestartListener()
-{
-    // Close existing socket
-    if (m_ListenSocket != -1)
-    {
-        close_socket(m_ListenSocket);
-        m_ListenSocket = -1;
-    }
-    
-    // Reset poll descriptors
-    m_PollFds = 0;
-    for(int i = 0; i < 1 + MAX_CLIENTS; i++)
-        m_aPollFds[i].fd = -1;
-    
-    // Close all client connections
-    for (int i = 0; i < MAX_CLIENTS; i++)
-    {
-        if (m_aClients[i].m_Socket != -1)
-        {
-            close_socket(m_aClients[i].m_Socket);
-            m_aClients[i].m_Socket = -1;
-        }
-        m_aClients[i].m_New = true;
-    }
-    
-    // Recreate socket
-    m_ListenSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if(m_ListenSocket < 0)
-    {
-        smutils->LogError(myself, "Failed creating socket in RestartListener.");
-        return;
-    }
-
-    int yes = 1;
-    setsockopt(m_ListenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
-
-    #ifdef _WIN32
-        unsigned long nonblock = 1;
-        ioctlsocket(m_ListenSocket, FIONBIO, &nonblock);
-    #else
-        int flags = fcntl(m_ListenSocket, F_GETFL, 0);
-        fcntl(m_ListenSocket, F_SETFL, flags | O_NONBLOCK);
-    #endif
-
-    // Re-add frame action to trigger ListenSocket again
-    smutils->AddFrameAction(ListenSocketAction, this);
-}
-
-bool CVoice::IsRunning()
-{
-    return (m_ListenSocket != -1 && m_PollFds > 0);
-}
-
 void CVoice::SDK_OnUnload()
 {
     smutils->RemoveGameFrameHook(::OnGameFrame);
@@ -692,7 +678,6 @@ bool CVoice::OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data)
     int client = pClient->GetPlayerSlot() + 1;
 
     // Reject voice packet if we'd send more than NET_MAX_VOICE_BYTES_FRAME voice bytes from this client in the current frame.
-    // 5 = SVC_VoiceData header/overhead
     g_aFrameVoiceBytes[client] += 5 + nBytes;
     
     if (g_aFrameVoiceBytes[client] > NET_MAX_VOICE_BYTES_FRAME)
@@ -923,95 +908,70 @@ void CVoice::OnDataReceived(CClient *pClient, int16_t *pData, size_t Samples)
 
 void CVoice::HandleVoiceData()
 {
-    uint32_t sampleRate = 48000;
-    const int SamplesPerChannel = 480;
-    const int Channels = 2;
-    int TotalSamplesPerFrame = SamplesPerChannel * Channels;
+    int SamplesPerFrame = m_EncoderSettings.frameSize;
+    int packetSize = m_EncoderSettings.packetSize;
+    
+    // Opus works in samples per channel, and we're using mono
+    size_t FramesAvailable = m_Buffer.TotalLength() / SamplesPerFrame;
+    float TimeAvailable = (float)m_Buffer.TotalLength() / (float)m_EncoderSettings.sampleRateHz;
 
-    int FramesAvailable = m_Buffer.TotalLength() / TotalSamplesPerFrame;
     if(!FramesAvailable)
         return;
 
-    int FramesMax = 2;
-    bool reset_state = false;
-    if (FramesAvailable <= FramesMax)
+    // Before starting playback we want at least 100ms in the buffer
+    if(m_AvailableTime < getTime() && TimeAvailable < 0.1)
+        return;
+
+    // let the clients have no more than 500ms
+    if(m_AvailableTime > getTime() + 0.5)
+        return;
+
+    // Max frames per packet - same as CELT version
+    size_t max_frames = 5;
+    FramesAvailable = min_ext(FramesAvailable, max_frames);
+
+    // Get SourceTV Index
+    if (!hltv)
     {
-        reset_state = true;
+#if SOURCE_ENGINE >= SE_CSGO
+        hltv = hltvdirector->GetHLTVServer(0);
+#else
+        hltv = hltvdirector->GetHLTVServer();
+#endif
     }
-    FramesAvailable = min_ext(FramesAvailable, FramesMax);
 
-    // Allow less buffering after audio has started playing
-    if (m_Buffer.TotalLength() < TotalSamplesPerFrame)
-        return;
+    int iSourceTVIndex = 0;
+    if (hltv)
+        iSourceTVIndex = hltv->GetHLTVSlot();
 
-    float TimeAvailable = (float)m_Buffer.TotalLength() / sampleRate;
-    if (m_AvailableTime < getTime() && TimeAvailable < 0.2)
-        return;
-
-    double maxBuffer = (m_AvailableTime < getTime()) ? 0.2 : 0.04;
-    if (m_AvailableTime > getTime() + maxBuffer)
-        return;
-    
-    IClient *pClient = iserver->GetClient(0);
+    IClient *pClient = iserver->GetClient(iSourceTVIndex);
     if(!pClient)
+    {
+        smutils->LogError(myself, "Couldnt get client with id %d (SourceTV)\n", iSourceTVIndex);
         return;
+    }
 
     unsigned char aFinal[8192];
-    size_t FinalSize = 0;
-
-    // 1. Steam Account ID (4 bytes)
-    uint32_t steamID = 1;
-    memcpy(&aFinal[FinalSize], &steamID, sizeof(uint32_t));
-    FinalSize += sizeof(uint32_t);
-
-    // 2. Steam Community (4 bytes)
-    uint32_t steamCommunity = 0x01100001;
-    memcpy(&aFinal[FinalSize], &steamCommunity, sizeof(uint32_t));
-    FinalSize += sizeof(uint32_t);
-
-    // 3. Payload Type 11 (1 byte)
-    aFinal[FinalSize++] = 0x0B;
-
-    // 4. Sample Rate (2 bytes little-endian)
-    memcpy(&aFinal[FinalSize], &sampleRate, sizeof(uint16_t));
-    FinalSize += sizeof(uint16_t);
-
-    // 5. Payload Type 5 for Opus. 6 for opus plc (1 byte)
-    aFinal[FinalSize++] = 0x05;
-
-    // 6. Reserve space for total data length (2 bytes little-endian)
-    uint16_t *pTotalDataLength = (uint16_t*)&aFinal[FinalSize];
-    FinalSize += sizeof(uint16_t);
-    *pTotalDataLength = 0;
-
-    // 7. Encode frames
-    for(int Frame = 0; Frame < FramesAvailable; Frame++)
+    
+    for(size_t Frame = 0; Frame < FramesAvailable; Frame++)
     {
-        int16_t aBuffer[TotalSamplesPerFrame];
+        // Get data from ringbuffer
+        int16_t aBuffer[SamplesPerFrame];
 
-        if(!m_Buffer.Pop(aBuffer, TotalSamplesPerFrame))
+        if(!m_Buffer.Pop(aBuffer, SamplesPerFrame))
         {
             smutils->LogError(myself, "Buffer pop failed!");
             return;
         }
 
-        uint16_t *pFrameSize = (uint16_t*)&aFinal[FinalSize];
-        FinalSize += sizeof(uint16_t);
-        *pFrameSize = sizeof(aFinal) - sizeof(uint32_t) - FinalSize;
-
         // Encode with Opus
-        int nbBytes = opus_encode(m_OpusEncoder, (const opus_int16*)aBuffer, SamplesPerChannel,
-                                  &aFinal[FinalSize], *pFrameSize);
-        if (nbBytes <= 1)
+        int nbBytes = opus_encode(m_OpusEncoder, aBuffer, SamplesPerFrame, aFinal, packetSize);
+        
+        if (nbBytes <= 0)
         {
             smutils->LogError(myself, "Opus encode failed: %s", opus_strerror(nbBytes));
             return;
         }
-
-        // Write frame size
-        *pFrameSize = (uint16_t)nbBytes;
-        *pTotalDataLength += sizeof(uint16_t) + nbBytes;
-        FinalSize += nbBytes;
 
         // Check for buffer underruns
         for(int Client = 0; Client < MAX_CLIENTS; Client++)
@@ -1029,33 +989,82 @@ void CVoice::HandleVoiceData()
                 pClient->m_LastLength = m_Buffer.CurrentLength();
             }
         }
+
+        BroadcastVoiceData(pClient, nbBytes, aFinal);
     }
 
-    // 8. Add CRC32
-    uint32_t crc32_value = UTIL_CRC32(aFinal, FinalSize);
-    memcpy(&aFinal[FinalSize], &crc32_value, sizeof(uint32_t));
-    FinalSize += sizeof(uint32_t);
-    
-    BroadcastVoiceData(pClient, FinalSize, aFinal);
-
-    if (m_AvailableTime < getTime())
+    if(m_AvailableTime < getTime())
         m_AvailableTime = getTime();
-    m_AvailableTime += (double)FramesAvailable * 0.01;
-    
-    if (reset_state)
-    {
-        opus_encoder_ctl(m_OpusEncoder, OPUS_RESET_STATE);
-    }
+
+    m_AvailableTime += (double)FramesAvailable * m_EncoderSettings.frameTime;
 }
 
 void CVoice::BroadcastVoiceData(IClient *pClient, int nBytes, unsigned char *pData)
 {
-    #ifdef _WIN32
-    __asm mov ecx, pClient;
-    __asm mov edx, nBytes;
+    if (!g_Interface.OnBroadcastVoiceData(pClient, nBytes, (char*)pData))
+        return;
 
-    DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
+#if SOURCE_ENGINE == SE_CSGO || SOURCE_ENGINE == SE_INSURGENCY
+    #ifdef _WIN32
+        __asm mov ecx, pClient;
+        __asm mov edx, nBytes;
+
+        DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
     #else
-    DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, (char *)pData, 0);
+        bool drop = false;
+        static ::google::protobuf::int32 sequence_bytes = 0;
+        static ::google::protobuf::uint32 section_number = 0;
+        static ::google::protobuf::uint32 uncompressed_sample_offset = 0;
+
+        int client = pClient->GetPlayerSlot() + 1;
+
+        if (g_pTimerSpeaking[client] == NULL)
+        {
+            section_number++;
+            sequence_bytes = 0;
+            uncompressed_sample_offset = 0;
+        }
+
+        CCLCMsg_VoiceData msg;
+        msg.set_xuid(0);
+
+        if (strcmp(g_SvTestDataHex->GetString(), "") == 0)
+        {
+            sequence_bytes += nBytes;
+            msg.set_data((char*)pData, nBytes);
+        }
+        else
+        {
+            ::std::string testing = hex_to_string(g_SvTestDataHex->GetString());
+            sequence_bytes += nBytes;
+            msg.set_data(testing.c_str(), testing.size());
+        }
+
+        uncompressed_sample_offset += m_EncoderSettings.frameSize;
+
+        msg.set_format(VOICEDATA_FORMAT_ENGINE);
+        msg.set_sequence_bytes(sequence_bytes);
+        msg.set_section_number(0);
+        msg.set_uncompressed_sample_offset(0);
+
+        if (g_SvLogging->GetInt())
+            PrintCCLCMsg_VoiceData("BroadcastVoiceData", client, msg, drop);
+
+        if (g_SvCallOriginalBroadcast->GetInt())
+            DETOUR_STATIC_CALL(SV_BroadcastVoiceData_CSGO)(pClient, msg, drop);
     #endif
+#else
+    #ifdef _WIN32
+        #ifndef WIN64
+        __asm mov ecx, pClient;
+        __asm mov edx, nBytes;
+        #endif
+
+        if (g_SvCallOriginalBroadcast->GetInt())
+            DETOUR_STATIC_CALL(SV_BroadcastVoiceData_LTCG)((char *)pData, 0);
+    #else
+        if (g_SvCallOriginalBroadcast->GetInt())
+            DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, (char *)pData, 0);
+    #endif
+#endif
 }

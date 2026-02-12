@@ -70,10 +70,10 @@
 // voice packets are sent over unreliable netchannel
 #define NET_MAX_VOICE_BYTES_FRAME (10 * (5 + 64))
 
-// ConVar pointers for auto-config and callbacks
-ConVar *g_SvLogging = NULL;
-ConVar *g_SmVoiceAddr = NULL;
-ConVar *g_SmVoicePort = NULL;
+// EXACT same as original - CreateConVar at top level
+ConVar *g_SvLogging = CreateConVar("sm_voice_logging", "0", FCVAR_NOTIFY, "Log client connections");
+ConVar *g_SmVoiceAddr = CreateConVar("sm_voice_addr", "127.0.0.1", FCVAR_PROTECTED, "Voice server listen ip address [0.0.0.0 for docker]");
+ConVar *g_SmVoicePort = CreateConVar("sm_voice_port", "27020", FCVAR_PROTECTED, "Voice server listen port [1025 - 65535]", true, 1025.0, true, 65535.0);
 
 /**
  * @file extension.cpp
@@ -84,21 +84,6 @@ template <typename T> inline T min_ext(T a, T b) { return a<b?a:b; }
 
 CVoice g_Interface;
 SMEXT_LINK(&g_Interface);
-
-void OnConVarChanged(IConVar *var, const char *pOldValue, float flOldValue)
-{
-    ConVarRef cvar(var);
-    
-    if (strcmp(cvar.GetName(), "sm_voice_addr") == 0 || 
-        strcmp(cvar.GetName(), "sm_voice_port") == 0)
-    {
-        if (g_Interface.IsRunning())
-        {
-            smutils->LogMessage(myself, "Voice server address/port changed, restarting listener...");
-            g_Interface.RestartListener();
-        }
-    }
-}
 
 CGlobalVars *gpGlobals = NULL;
 ISDKTools *g_pSDKTools = NULL;
@@ -435,28 +420,6 @@ bool CVoice::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
     gpGlobals = ismm->GetCGlobals();
     ConVar_Register(0, this);
 
-    // Create and register convars with AutoExecConfig support
-    g_SvLogging = new ConVar("sv_voice_extension_logging", 
-                            "0", 
-                            FCVAR_NONE, 
-                            "Enable voice extension logging",
-                            true, 0.0, true, 1.0,
-                            &OnConVarChanged);
-    
-    g_SmVoiceAddr = new ConVar("sm_voice_addr", 
-                              "127.0.0.1", 
-                              FCVAR_PROTECTED, 
-                              "Voice server listen ip address.",
-                              true, 0.0, false, 0.0,
-                              &OnConVarChanged);
-    
-    g_SmVoicePort = new ConVar("sm_voice_port", 
-                              "27020", 
-                              FCVAR_PROTECTED, 
-                              "Voice server listen port.",
-                              true, 1025.0, true, 65535.0,
-                              &OnConVarChanged);
-
     return true;
 }
 
@@ -706,25 +669,6 @@ void CVoice::SDK_OnUnload()
         m_OpusEncoder = NULL;
     }
 
-    // Clean up convars
-    if (g_SvLogging)
-    {
-        delete g_SvLogging;
-        g_SvLogging = NULL;
-    }
-    
-    if (g_SmVoiceAddr)
-    {
-        delete g_SmVoiceAddr;
-        g_SmVoiceAddr = NULL;
-    }
-    
-    if (g_SmVoicePort)
-    {
-        delete g_SmVoicePort;
-        g_SmVoicePort = NULL;
-    }
-
 #ifdef _WIN32
     WSACleanup();
 #endif
@@ -759,10 +703,12 @@ bool CVoice::OnBroadcastVoiceData(IClient *pClient, int nBytes, char *data)
     g_fLastVoiceData[client] = gpGlobals->curtime;
 
     // Start speaking timer if not already running
-    if (g_pTimerSpeaking[client] == NULL && g_SvLogging->GetInt())
+    if (g_pTimerSpeaking[client] == NULL)
     {
         g_pTimerSpeaking[client] = timersys->CreateTimer(&s_SpeakingEndTimer, 0.3f, (void *)(intptr_t)client, 0);
-        g_pSM->LogMessage(myself, "Player Speaking Start (client=%d)", client);
+
+        if (g_SvLogging->GetInt())
+            g_pSM->LogMessage(myself, "Player Speaking Start (client=%d)", client);
     }
 
     return true;

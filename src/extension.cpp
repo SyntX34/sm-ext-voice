@@ -75,23 +75,6 @@ ConVar *g_SvLogging = NULL;
 ConVar *g_SmVoiceAddr = NULL;
 ConVar *g_SmVoicePort = NULL;
 
-// ConVar change callback
-void OnConVarChanged(IConVar *var, const char *pOldValue, float flOldValue)
-{
-    ConVarRef cvar(var);
-    
-    if (strcmp(cvar.GetName(), "sm_voice_addr") == 0 || 
-        strcmp(cvar.GetName(), "sm_voice_port") == 0)
-    {
-        // Restart the listen socket when address or port changes
-        if (g_Interface.IsRunning())
-        {
-            smutils->LogMessage(myself, "Voice server address/port changed, restarting listener...");
-            g_Interface.RestartListener();
-        }
-    }
-}
-
 /**
  * @file extension.cpp
  * @brief Implement extension code here.
@@ -101,6 +84,21 @@ template <typename T> inline T min_ext(T a, T b) { return a<b?a:b; }
 
 CVoice g_Interface;
 SMEXT_LINK(&g_Interface);
+
+void OnConVarChanged(IConVar *var, const char *pOldValue, float flOldValue)
+{
+    ConVarRef cvar(var);
+    
+    if (strcmp(cvar.GetName(), "sm_voice_addr") == 0 || 
+        strcmp(cvar.GetName(), "sm_voice_port") == 0)
+    {
+        if (g_Interface.IsRunning())
+        {
+            smutils->LogMessage(myself, "Voice server address/port changed, restarting listener...");
+            g_Interface.RestartListener();
+        }
+    }
+}
 
 CGlobalVars *gpGlobals = NULL;
 ISDKTools *g_pSDKTools = NULL;
